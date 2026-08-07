@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "flora",
+  "productName": "Flora",
   "version": "0.1.0",
   "identifier": "com.grant.flora",
   "build": {
@@ -13,9 +13,16 @@
     "withGlobalTauri": true,
     "windows": [
       {
-        "title": "flora",
-        "width": 800,
-        "height": 600
+        "label": "main",
+        "title": "Flora",
+        "width": 340,
+        "height": 620,
+        "minWidth": 300,
+        "minHeight": 520,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "resizable": true
       }
     ],
     "security": {

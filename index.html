@@ -1,13 +1,80 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <link rel="stylesheet" href="/src/styles.css" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Flora</title>
-    <script type="module" src="/src/main.ts" defer></script>
-  </head>
-  <body>
-    <div id="app"></div>
-  </body>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Flora</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/styles.css" />
+  <script type="module" src="/src/main.ts" defer></script>
+</head>
+<body>
+
+  <!--
+    Structure ported verbatim from flora-preview.html.
+    The custom titlebar is the only addition (Tauri drag region).
+  -->
+
+  <div class="stage">
+    <!-- Custom titlebar — Tauri drag region for frameless window -->
+    <div id="titlebar" data-tauri-drag-region>
+      <span data-tauri-drag-region>Flora</span>
+    </div>
+
+    <div class="eyebrow"><b>Module A</b> — shell &amp; avatar · debug</div>
+
+    <div class="jar-wrap">
+      <div class="halo" id="halo"></div>
+      <div class="jar" id="jar">
+        <div class="fog"></div>
+        <div class="jar-rim"></div>
+        <div class="droplet" style="top:22%; left:16%;"></div>
+        <div class="droplet" style="top:40%; right:20%;"></div>
+        <div class="droplet" style="top:64%; left:24%; width:3px; height:3px;"></div>
+
+        <div class="thinking-dots"><span></span><span></span><span></span></div>
+        <div class="zzz">z z z</div>
+
+        <div class="character">
+          <div class="sparkle sp1"></div>
+          <div class="sparkle sp2"></div>
+          <div class="sparkle sp3"></div>
+          <div class="sparkle sp4"></div>
+          <div class="stem"></div>
+          <div class="leaf leaf-l"></div>
+          <div class="leaf leaf-r"></div>
+          <div class="head">
+            <div class="sprout-tip"></div>
+            <div class="face">
+              <div class="eye"></div>
+              <div class="eye"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="ground"></div>
+      </div>
+    </div>
+
+    <div class="readout">
+      <span class="state-name" id="stateName">Idle</span>
+      <span class="dash">·</span>
+      <span class="time" id="timeNow">00:00</span>
+    </div>
+
+    <div class="controls" id="controls"></div>
+
+    <div class="brief" id="brief">
+      Good morning. <b>3 tasks</b> today, first one's due at 11:00.
+      Light rain moves in this afternoon — 62°F now.
+    </div>
+
+    <div class="caption">
+      Manual triggers stand in for real signals (idle timer, task events,<br />
+      calendar proximity) until Module B's state engine is wired in.
+    </div>
+  </div>
+
+</body>
 </html>

@@ -1,15 +1,447 @@
+/*
+ * Flora — Module A styles
+ *
+ * Ported verbatim from flora-preview.html.
+ * Additions: #titlebar (Tauri drag region), html/body transparency
+ * for the frameless floating widget.
+ */
+
+/* ============================================
+   DESIGN TOKENS
+   ============================================ */
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
-  color-scheme: dark;
+  --bg-deep: #0a0f0c;
+  --bg-panel: #101a14;
+  --glass-edge: rgba(237, 231, 218, 0.10);
+  --glass-hi: rgba(255, 255, 255, 0.06);
+  --cream: #ede7da;
+  --cream-dim: rgba(237, 231, 218, 0.55);
+  --cream-faint: rgba(237, 231, 218, 0.30);
+
+  --c-idle: #7fcb9a;
+  --c-greeting: #8fe3c7;
+  --c-focused: #e8b84b;
+  --c-celebrating: #f4886b;
+  --c-sleepy: #9c8fc9;
+  --c-thinking: #7ed4e0;
+  --c-offline: #5b6660;
+
+  --accent: var(--c-idle);
 }
 
-body {
-  margin: 0;
-  padding: 0;
-  background-color: #0d0f12;
-  color: #f4f4f5;
-  width: 100vw;
-  height: 100vh;
+/* ============================================
+   RESET & BASE
+   ============================================ */
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
   overflow: hidden;
+  background: transparent;
+  font-family: 'IBM Plex Mono', monospace;
+  color: var(--cream);
   user-select: none;
+  -webkit-user-select: none;
+}
+
+/* ============================================
+   STAGE — main layout container
+   ============================================ */
+.stage {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 0 16px 16px;
+  background:
+    radial-gradient(ellipse 900px 600px at 50% 20%, #0d1610 0%, var(--bg-deep) 60%);
+  border-radius: 14px;
+  border: 1px solid rgba(237, 231, 218, 0.06);
+  overflow: hidden;
+}
+
+/* ============================================
+   CUSTOM TITLEBAR (Tauri drag region)
+   ============================================ */
+#titlebar {
+  width: calc(100% + 32px);
+  margin: 0 -16px;
+  padding: 10px 0;
+  text-align: center;
+  font-size: 10px;
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  color: var(--cream-faint);
+  cursor: grab;
+  flex-shrink: 0;
+  border-bottom: 1px solid rgba(237, 231, 218, 0.04);
+}
+
+/* ============================================
+   EYEBROW LABEL
+   ============================================ */
+.eyebrow {
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--cream-faint);
+  text-align: center;
+  flex-shrink: 0;
+}
+.eyebrow b { color: var(--cream-dim); font-weight: 500; }
+
+/* ============================================
+   THE JAR — main avatar container
+   ============================================ */
+.jar-wrap {
+  position: relative;
+  width: 240px;
+  height: 270px;
+  flex-shrink: 0;
+}
+
+.halo {
+  position: absolute;
+  inset: -40px;
+  border-radius: 50%;
+  background: radial-gradient(circle, var(--accent) 0%, transparent 68%);
+  opacity: 0.28;
+  filter: blur(18px);
+  transition: background 700ms ease, opacity 700ms ease;
+  animation: halo-breathe 4.2s ease-in-out infinite;
+}
+@keyframes halo-breathe {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.08); }
+}
+
+.jar {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 130px 130px 46px 46px;
+  background: linear-gradient(
+    180deg,
+    rgba(237, 231, 218, 0.05) 0%,
+    rgba(237, 231, 218, 0.02) 40%,
+    rgba(0, 0, 0, 0.15) 100%
+  );
+  border: 1px solid var(--glass-edge);
+  box-shadow:
+    inset 0 1px 0 var(--glass-hi),
+    inset 0 -18px 40px rgba(0, 0, 0, 0.35),
+    0 30px 60px -20px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+  backdrop-filter: blur(1px);
+  transition: opacity 600ms ease, filter 600ms ease;
+}
+.jar.is-offline { filter: saturate(0.25) brightness(0.75); }
+
+.jar-rim {
+  position: absolute;
+  top: 0; left: 14%;
+  width: 72%;
+  height: 14px;
+  border-radius: 0 0 50% 50% / 0 0 100% 100%;
+  background: var(--glass-hi);
+  opacity: 0.5;
+}
+
+.droplet {
+  position: absolute;
+  width: 5px; height: 5px;
+  border-radius: 50%;
+  background: rgba(237, 231, 218, 0.35);
+}
+
+/* ============================================
+   GROUND
+   ============================================ */
+.ground {
+  position: absolute;
+  bottom: 0; left: 0; right: 0;
+  height: 56px;
+  background: linear-gradient(180deg, rgba(90, 70, 50, 0.35), rgba(40, 30, 22, 0.55));
+  border-top: 1px solid rgba(237, 231, 218, 0.06);
+}
+
+/* ============================================
+   CHARACTER — the plant
+   ============================================ */
+.character {
+  position: absolute;
+  left: 50%; bottom: 52px;
+  transform: translateX(-50%);
+  width: 150px; height: 175px;
+}
+
+.stem {
+  position: absolute;
+  left: 50%; bottom: 0;
+  width: 10px; height: 64px;
+  transform: translateX(-50%);
+  background: linear-gradient(
+    180deg,
+    var(--accent),
+    color-mix(in srgb, var(--accent) 60%, #0a0f0c)
+  );
+  border-radius: 6px;
+  transition: background 600ms ease;
+  animation: sway 3.6s ease-in-out infinite;
+  transform-origin: bottom center;
+}
+
+.leaf {
+  position: absolute;
+  width: 58px; height: 34px;
+  background: var(--accent);
+  border-radius: 70% 20% 70% 20%;
+  transition: background 600ms ease, transform 500ms cubic-bezier(.34, 1.4, .64, 1), opacity 500ms ease;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+.leaf-l { bottom: 52px; left: 8px; transform: rotate(-18deg); transform-origin: 100% 60%; }
+.leaf-r { bottom: 52px; right: 8px; transform: rotate(18deg) scaleX(-1); transform-origin: 0% 60%; }
+
+.head {
+  position: absolute;
+  left: 50%; bottom: 96px;
+  width: 78px; height: 78px;
+  transform: translateX(-50%);
+  background: radial-gradient(
+    circle at 34% 30%,
+    color-mix(in srgb, var(--accent) 70%, white),
+    var(--accent)
+  );
+  border-radius: 52% 52% 50% 50% / 58% 58% 46% 46%;
+  transition: background 600ms ease, transform 500ms ease;
+  animation: breathe 3.6s ease-in-out infinite;
+  box-shadow: 0 8px 24px -8px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+
+.face {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center; gap: 16px;
+}
+.eye {
+  width: 7px; height: 9px;
+  background: rgba(10, 15, 12, 0.75);
+  border-radius: 50%;
+  transition: all 400ms ease;
+}
+
+.sprout-tip {
+  position: absolute;
+  left: 50%; top: -10px;
+  width: 14px; height: 22px;
+  transform: translateX(-50%);
+  background: var(--accent);
+  border-radius: 60% 60% 50% 50% / 80% 80% 20% 20%;
+  transition: background 600ms ease;
+}
+
+@keyframes breathe {
+  0%, 100% { transform: translateX(-50%) scale(1); }
+  50% { transform: translateX(-50%) scale(1.045); }
+}
+@keyframes sway {
+  0%, 100% { transform: translateX(-50%) rotate(-2deg); }
+  50% { transform: translateX(-50%) rotate(2deg); }
+}
+
+/* ============================================
+   STATE: GREETING — leaves wave, eyes wide
+   ============================================ */
+.jar.is-greeting .leaf-l { animation: wave-l 650ms ease-in-out infinite; }
+.jar.is-greeting .leaf-r { animation: wave-r 650ms ease-in-out infinite; }
+@keyframes wave-l { 0%, 100% { transform: rotate(-18deg); } 50% { transform: rotate(-38deg); } }
+@keyframes wave-r { 0%, 100% { transform: rotate(18deg) scaleX(-1); } 50% { transform: rotate(38deg) scaleX(-1); } }
+.jar.is-greeting .eye { height: 11px; }
+
+/* ============================================
+   STATE: FOCUSED — leaves lean in, eyes narrow
+   ============================================ */
+.jar.is-focused .leaf-l { transform: rotate(-30deg) translateX(6px); }
+.jar.is-focused .leaf-r { transform: rotate(30deg) scaleX(-1) translateX(-6px); }
+.jar.is-focused .eye { height: 5px; border-radius: 2px; }
+.jar.is-focused .head { animation-duration: 2.2s; }
+
+/* ============================================
+   STATE: CELEBRATING — bounce + sparkles
+   ============================================ */
+.jar.is-celebrating .head { animation: bounce 620ms ease-in-out infinite; }
+.jar.is-celebrating .leaf-l { animation: wave-l 420ms ease-in-out infinite; }
+.jar.is-celebrating .leaf-r { animation: wave-r 420ms ease-in-out infinite; }
+.jar.is-celebrating .eye { height: 9px; border-radius: 50% 50% 0 0; transform: translateY(1px); }
+@keyframes bounce {
+  0%, 100% { transform: translateX(-50%) translateY(0) scale(1); }
+  50% { transform: translateX(-50%) translateY(-10px) scale(1.05); }
+}
+
+.sparkle {
+  position: absolute;
+  width: 6px; height: 6px;
+  background: #ffd88a;
+  border-radius: 50%;
+  opacity: 0;
+  box-shadow: 0 0 8px 1px #ffd88a;
+}
+.jar.is-celebrating .sparkle { animation: pop 1100ms ease-out infinite; }
+.sp1 { top: 30%; left: 22%; animation-delay: 0ms !important; }
+.sp2 { top: 24%; right: 24%; animation-delay: 250ms !important; }
+.sp3 { top: 44%; right: 16%; animation-delay: 500ms !important; }
+.sp4 { top: 50%; left: 16%; animation-delay: 750ms !important; }
+@keyframes pop {
+  0% { opacity: 0; transform: translateY(0) scale(0.4); }
+  30% { opacity: 1; transform: translateY(-14px) scale(1); }
+  100% { opacity: 0; transform: translateY(-30px) scale(0.6); }
+}
+
+/* ============================================
+   STATE: SLEEPY — eyes closed, droop, slow
+   ============================================ */
+.jar.is-sleepy .eye { height: 2px; border-radius: 2px; }
+.jar.is-sleepy .leaf-l { transform: rotate(-6deg) translateY(10px); }
+.jar.is-sleepy .leaf-r { transform: rotate(6deg) scaleX(-1) translateY(10px); }
+.jar.is-sleepy .head { animation-duration: 6s; }
+.jar.is-sleepy .stem { animation-duration: 6s; }
+
+.zzz {
+  position: absolute;
+  top: 6%; right: 18%;
+  font-family: 'Fraunces', serif;
+  font-size: 15px;
+  color: var(--cream-dim);
+  opacity: 0;
+}
+.jar.is-sleepy .zzz { animation: zzz-float 3.2s ease-in infinite; }
+@keyframes zzz-float {
+  0% { opacity: 0; transform: translateY(0) scale(0.7); }
+  20% { opacity: 0.8; }
+  80% { opacity: 0; }
+  100% { opacity: 0; transform: translateY(-26px) scale(1.1); }
+}
+
+/* ============================================
+   STATE: THINKING — pulsing dots above head
+   ============================================ */
+.thinking-dots {
+  position: absolute;
+  top: 2%; left: 50%;
+  transform: translateX(-50%);
+  display: flex; gap: 5px;
+  opacity: 0;
+}
+.jar.is-thinking .thinking-dots { opacity: 1; }
+.thinking-dots span {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--accent);
+  animation: dot-pulse 1.1s ease-in-out infinite;
+}
+.thinking-dots span:nth-child(2) { animation-delay: 0.15s; }
+.thinking-dots span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes dot-pulse {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+  30% { transform: translateY(-5px); opacity: 1; }
+}
+
+/* ============================================
+   STATE: OFFLINE — dim, fogged
+   ============================================ */
+.fog {
+  position: absolute; inset: 0;
+  background: rgba(20, 26, 22, 0);
+  transition: background 600ms ease;
+  pointer-events: none;
+}
+.jar.is-offline .fog { background: rgba(20, 26, 22, 0.42); }
+
+/* ============================================
+   READOUT — state name + clock
+   ============================================ */
+.readout {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  font-size: 13px;
+  flex-shrink: 0;
+}
+.readout .state-name {
+  font-family: 'Fraunces', serif;
+  font-weight: 500;
+  font-size: 18px;
+  color: var(--cream);
+  letter-spacing: 0.01em;
+}
+.readout .dash { color: var(--cream-faint); }
+.readout .time { color: var(--cream-dim); }
+
+/* ============================================
+   DEBUG CONTROLS
+   ============================================ */
+.controls {
+  width: 100%;
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  flex-shrink: 0;
+}
+.controls button {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.02em;
+  color: var(--cream-dim);
+  background: rgba(237, 231, 218, 0.04);
+  border: 1px solid rgba(237, 231, 218, 0.10);
+  border-radius: 8px;
+  padding: 8px 2px;
+  cursor: pointer;
+  transition: all 180ms ease;
+}
+.controls button:hover {
+  background: rgba(237, 231, 218, 0.09);
+  color: var(--cream);
+}
+.controls button.active {
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 55%, transparent);
+  color: var(--cream);
+}
+
+/* ============================================
+   BRIEF PANEL (greeting only)
+   ============================================ */
+.brief {
+  width: 100%;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 500ms ease, opacity 400ms ease, padding 500ms ease;
+  background: rgba(237, 231, 218, 0.04);
+  border: 1px solid rgba(237, 231, 218, 0.08);
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--cream-dim);
+  flex-shrink: 0;
+}
+.brief.show {
+  max-height: 120px;
+  opacity: 1;
+  padding: 12px 14px;
+}
+.brief b { color: var(--cream); font-weight: 500; }
+
+/* ============================================
+   CAPTION
+   ============================================ */
+.caption {
+  font-size: 9px;
+  color: var(--cream-faint);
+  text-align: center;
+  line-height: 1.6;
+  flex-shrink: 0;
+  padding-bottom: 4px;
 }
