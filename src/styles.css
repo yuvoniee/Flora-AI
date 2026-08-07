@@ -1,0 +1,15 @@
+:root {
+  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #0d0f12;
+  color: #f4f4f5;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
+  user-select: none;
+}
