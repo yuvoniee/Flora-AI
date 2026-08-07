@@ -9,6 +9,7 @@
 import { FloraStateMachine, STATES } from './states';
 import { AvatarRenderer } from './avatar';
 import { initWindowPersistence } from './persistence';
+import { IdleSignalSource } from './signals';
 
 /** Build the debug-button grid — same layout as the preview */
 function buildDebugPanel(
@@ -73,5 +74,10 @@ window.addEventListener('DOMContentLoaded', async () => {
   // Window persistence (Tauri-only, no-ops in browser)
   await initWindowPersistence();
 
-  console.log('[Flora] Module A ready — 7 states, debug panel active');
+  // Idle/activity signal source — polls OS idle time, fires triggers.
+  // Fails silently outside Tauri (invoke will reject, poll skips).
+  const signals = new IdleSignalSource(sm);
+  signals.start();
+
+  console.log('[Flora] Module A ready — 7 states, debug panel, idle signals active');
 });
