@@ -22,4 +22,13 @@ tauri = { version = "2", features = [] }
 tauri-plugin-opener = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+getrandom = "0.2"
+
+# §11: SQLCipher preferred. Use "bundled-sqlcipher-vendored-openssl" when
+# Perl is available on the build machine (needed to compile OpenSSL).
+# Fallback: plain SQLite + OS full-disk encryption (BitLocker / FileVault)
+# as the SRS §11 documented minimum.  Switching is a one-line feature change
+# here — memory.rs handles both via #[cfg(feature = "sqlcipher")].
+rusqlite = { version = "0.35", features = ["bundled"] }
+
 
