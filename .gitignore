@@ -17,6 +17,10 @@ src-tauri/target/
 src-tauri/gen/schemas/
 target/
 
+# Flora secrets + data (§11: never commit keys or user DB)
+*.key
+flora.db
+
 # IDE and OS files
 .vscode/*
 !.vscode/extensions.json
