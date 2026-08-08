@@ -1,69 +1,62 @@
 /**
- * Idle / activity signal source
+ * Signal Coordinator — Module A+B bridge
  *
- * Polls the Tauri `get_idle_seconds` command on a fixed interval (§13.6)
- * and fires state-machine triggers when thresholds are crossed.
+ * Polls raw sensor data (OS idle time) on a fixed interval (§13.6),
+ * feeds each snapshot through the State Engine (Module B), and
+ * applies the engine's output to the FloraStateMachine.
  *
- * This module doesn't know about avatar states — it only fires named
- * triggers.  The TRANSITIONS table in states.ts decides what happens.
+ * Flow:  poll() → SignalSnapshot → evaluate() → sm.setState()
  *
- * Thresholds from SRS §3:
- *   idle >20 min  → trigger `idle_long`   (sleepy)
- *   return >30 min → trigger `user_returns` (greeting, then idle)
- *   return <30 min → trigger `activity_detected` (straight to idle)
- *
- * Error handling per §4:
- *   Tauri command fails → skip that poll, don't crash, don't change state.
+ * This module contains NO mood-decision logic — that lives entirely
+ * in engine.ts as a pure function.
  */
 
 import { invoke } from '@tauri-apps/api/core';
 import { FloraStateMachine } from './states';
+import {
+  evaluate,
+  initialHistory,
+  DEFAULT_CONFIG,
+  SignalSnapshot,
+  EngineHistory,
+  EngineConfig,
+} from './engine';
 
-export interface IdleSignalConfig {
-  /** Poll interval in ms — §13.6 says 30–60s, not continuous */
+export interface SignalCoordinatorConfig {
+  /** Poll interval in ms — §13.6: 30-60 s, not continuous */
   pollIntervalMs: number;
-  /** Seconds idle before idle_long trigger — §3: >20 min */
-  sleepyThresholdSec: number;
-  /** Seconds away before return triggers greeting — §3: >30 min */
-  greetingThresholdSec: number;
+  /** Engine tuning overrides (thresholds, rate limits) */
+  engine?: Partial<EngineConfig>;
 }
 
-const DEFAULTS: IdleSignalConfig = {
-  pollIntervalMs: 30_000,        // 30 s
-  sleepyThresholdSec: 20 * 60,   // 20 min
-  greetingThresholdSec: 30 * 60, // 30 min
+const SIGNAL_DEFAULTS: SignalCoordinatorConfig = {
+  pollIntervalMs: 30_000,
 };
 
-/**
- * Isolated signal source the state engine consumes.
- * Start/stop controls the polling loop; nothing else in the app
- * needs to know about idle detection internals.
- */
-export class IdleSignalSource {
+export class SignalCoordinator {
   private sm: FloraStateMachine;
-  private cfg: IdleSignalConfig;
+  private pollMs: number;
+  private engineCfg: EngineConfig;
+  private history: EngineHistory;
   private timer: ReturnType<typeof setInterval> | null = null;
 
-  /** true once the user has been idle past the sleepy threshold */
-  private wasIdle = false;
-  /** most-recent idle reading — used to estimate how long the user was away */
-  private lastIdleSec = 0;
-
-  constructor(sm: FloraStateMachine, overrides?: Partial<IdleSignalConfig>) {
+  constructor(
+    sm: FloraStateMachine,
+    overrides?: Partial<SignalCoordinatorConfig>,
+  ) {
+    const cfg = { ...SIGNAL_DEFAULTS, ...overrides };
     this.sm = sm;
-    this.cfg = { ...DEFAULTS, ...overrides };
+    this.pollMs = cfg.pollIntervalMs;
+    this.engineCfg = { ...DEFAULT_CONFIG, ...cfg.engine };
+    this.history = initialHistory(Date.now());
   }
 
   start(): void {
     if (this.timer) return;
-    // First poll immediately, then on interval
     this.poll();
-    this.timer = setInterval(() => this.poll(), this.cfg.pollIntervalMs);
+    this.timer = setInterval(() => this.poll(), this.pollMs);
     console.log(
-      `[Flora/signals] idle polling started ` +
-        `(every ${this.cfg.pollIntervalMs / 1000}s, ` +
-        `sleepy at ${this.cfg.sleepyThresholdSec}s, ` +
-        `greeting at ${this.cfg.greetingThresholdSec}s)`,
+      `[Flora/signals] polling started (every ${this.pollMs / 1000}s)`,
     );
   }
 
@@ -71,36 +64,55 @@ export class IdleSignalSource {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
-      console.log('[Flora/signals] idle polling stopped');
+      console.log('[Flora/signals] polling stopped');
     }
   }
 
+  /** Mute proactive messages for durationMs (§4 mute rule) */
+  mute(durationMs: number): void {
+    this.history = {
+      ...this.history,
+      mutedUntil: Date.now() + durationMs,
+    };
+  }
+
+  unmute(): void {
+    this.history = { ...this.history, mutedUntil: null };
+  }
+
   private async poll(): Promise<void> {
-    let idleSec: number;
+    // ── 1. Collect raw signals ──
+    let idleSeconds: number | null;
     try {
-      idleSec = await invoke<number>('get_idle_seconds');
+      idleSeconds = await invoke<number>('get_idle_seconds');
     } catch {
-      // §4: missing/stale signal → skip, don't crash, don't change state
-      return;
+      idleSeconds = null; // §4: missing signal → null, engine defaults to 0
     }
 
-    const crossedSleepy = idleSec >= this.cfg.sleepyThresholdSec;
+    // Sync history.currentMood with the SM's actual state
+    // (accounts for auto-transitions like greeting→idle after 3s)
+    this.history = { ...this.history, currentMood: this.sm.getState() };
 
-    if (crossedSleepy && !this.wasIdle) {
-      // ── Just crossed the sleepy threshold ──
-      this.wasIdle = true;
-      this.sm.trigger('idle_long');
-    } else if (this.wasIdle && idleSec < 60) {
-      // ── User returned (idle dropped below 1 min) ──
-      // lastIdleSec is the peak from the previous poll, ≈ total away time
-      if (this.lastIdleSec >= this.cfg.greetingThresholdSec) {
-        this.sm.trigger('user_returns'); // away >30 min → greeting (auto→idle)
-      } else {
-        this.sm.trigger('activity_detected'); // away <30 min → idle
-      }
-      this.wasIdle = false;
+    // ── 2. Evaluate through the pure engine ──
+    const signals: SignalSnapshot = {
+      idleSeconds,
+      timestamp: Date.now(),
+    };
+    const result = evaluate(signals, this.history, this.engineCfg);
+
+    // ── 3. Apply output ──
+    if (result.mood !== this.sm.getState()) {
+      this.sm.setState(result.mood);
     }
 
-    this.lastIdleSec = idleSec;
+    if (result.proactiveMessage) {
+      console.log(
+        `[Flora/engine] proactive: ${result.proactiveMessage} ` +
+          `(reason: ${result.reason})`,
+      );
+      // Future: Module E feeds this to the LLM for text generation
+    }
+
+    this.history = result.history;
   }
 }
