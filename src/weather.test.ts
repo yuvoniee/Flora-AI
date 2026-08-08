@@ -1,0 +1,153 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest';
+import {
+  getWeather,
+  wmoToCondition,
+  clearWeatherCache,
+  getWeatherCacheState,
+  WeatherData,
+} from './weather';
+
+describe('Module D — Weather Integration', () => {
+  beforeEach(() => {
+    clearWeatherCache();
+    vi.restoreAllMocks();
+  });
+
+  describe('wmoToCondition mapping', () => {
+    it('maps WMO codes correctly to human-readable conditions', () => {
+      expect(wmoToCondition(0)).toBe('Clear');
+      expect(wmoToCondition(1)).toBe('Partly Cloudy');
+      expect(wmoToCondition(2)).toBe('Partly Cloudy');
+      expect(wmoToCondition(3)).toBe('Overcast');
+      expect(wmoToCondition(45)).toBe('Fog');
+      expect(wmoToCondition(53)).toBe('Drizzle');
+      expect(wmoToCondition(63)).toBe('Rain');
+      expect(wmoToCondition(73)).toBe('Snow');
+      expect(wmoToCondition(80)).toBe('Rain Showers');
+      expect(wmoToCondition(85)).toBe('Snow Showers');
+      expect(wmoToCondition(95)).toBe('Thunderstorm');
+      expect(wmoToCondition(999)).toBe('Unknown');
+    });
+  });
+
+  describe('getWeather API & Normalization', () => {
+    it('fetches and normalizes current weather data', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          current: {
+            temperature_2m: 22.4,
+            weather_code: 0,
+          },
+        }),
+      });
+
+      const weather = await getWeather({ lat: 40.71, lon: -74.01 }, mockFetch as any);
+
+      expect(weather).not.toBeNull();
+      expect(weather?.temp).toBe(22.4);
+      expect(weather?.condition).toBe('Clear');
+      expect(weather?.code).toBe(0);
+      expect(weather?.updatedAt).toBeDefined();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('caches response for 10 minutes and does not re-fetch', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          current: {
+            temperature_2m: 18.5,
+            weather_code: 3,
+          },
+        }),
+      });
+
+      // First call -> network fetch
+      const weather1 = await getWeather({}, mockFetch as any);
+      expect(weather1?.temp).toBe(18.5);
+      expect(weather1?.condition).toBe('Overcast');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      // Second call within TTL -> returns cached data, mockFetch not called again
+      const weather2 = await getWeather({}, mockFetch as any);
+      expect(weather2?.temp).toBe(18.5);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+      expect(getWeatherCacheState().cached).toBe(true);
+    });
+
+    it('bypasses cache when forceRefresh is true', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          current: {
+            temperature_2m: 20.0,
+            weather_code: 1,
+          },
+        }),
+      });
+
+      await getWeather({}, mockFetch as any);
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+
+      await getWeather({ forceRefresh: true }, mockFetch as any);
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('Error handling & Fallbacks (§6)', () => {
+    it('returns null and does not throw on network failure (fetch rejection)', async () => {
+      const mockFetch = vi.fn().mockRejectedValue(new Error('Network error / DNS failure'));
+
+      const weather = await getWeather({}, mockFetch as any);
+
+      expect(weather).toBeNull();
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns null and does not throw on HTTP status error (e.g. 500)', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+      });
+
+      const weather = await getWeather({}, mockFetch as any);
+
+      expect(weather).toBeNull();
+    });
+
+    it('returns null and does not throw on malformed JSON payload', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ invalid_payload: {} }),
+      });
+
+      const weather = await getWeather({}, mockFetch as any);
+
+      expect(weather).toBeNull();
+    });
+
+    it('returns stale cache if network fails while cache exists', async () => {
+      const mockFetchSuccess = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          current: {
+            temperature_2m: 15.0,
+            weather_code: 61,
+          },
+        }),
+      });
+
+      // Populate cache
+      await getWeather({}, mockFetchSuccess as any);
+
+      // Subsequent forceRefresh fails
+      const mockFetchFail = vi.fn().mockRejectedValue(new Error('Connection dropped'));
+      const weather = await getWeather({ forceRefresh: true }, mockFetchFail as any);
+
+      // Should return stale cache instead of null or throwing
+      expect(weather?.temp).toBe(15.0);
+      expect(weather?.condition).toBe('Rain');
+    });
+  });
+});
