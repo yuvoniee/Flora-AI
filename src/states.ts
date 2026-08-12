@@ -1,9 +1,17 @@
 /**
- * Flora Avatar State Machine
+ * Flora State Definitions — Module A
  *
- * Ported from flora-preview.html — same STATES config-object pattern,
- * same 7 states, same color vars.  Adding a new state = one entry here
+ * This file is the ONLY place where states and transitions are declared.
+ * FloraStateMachine reads from these tables — zero domain logic here,
+ * just data (labels, colors, durations, transitions).
+ *
+ * §3 compliance: all mood states defined here.
+ * §4 compliance: all transition rules live in TRANSITIONS,
  * + matching CSS rules.  No if/else anywhere.
+ *
+ * §13.2 failure states:
+ *   confused — single integration failed (3 s flash → idle)
+ *   offline  — no network (§13.4; existing)
  */
 
 /** Per-state config stored in the STATES table */
@@ -71,6 +79,14 @@ export const STATES: Record<string, StateConfig> = {
     jarClass: 'is-offline',
     color: 'var(--c-offline)',
   },
+  // §13.2: confused — one integration failed; flashes 3 s then returns to idle
+  confused: {
+    label: 'Confused',
+    jarClass: 'is-confused',
+    color: 'var(--c-confused)',
+    duration: 3000,
+    nextState: 'idle',
+  },
 };
 
 /**
@@ -91,6 +107,9 @@ export const TRANSITIONS: Transition[] = [
   { from: 'thinking',    trigger: 'llm_request_end',   to: 'idle'        },
   { from: '*',           trigger: 'network_lost',      to: 'offline'     },
   { from: 'offline',     trigger: 'network_restored',  to: 'idle'        },
+  // §13.2: integration failure — flash confused for 3 s, auto-return to idle
+  { from: 'idle',        trigger: 'integration_error', to: 'confused'    },
+  { from: 'greeting',    trigger: 'integration_error', to: 'confused'    },
 ];
 
 export type StateChangeListener = (

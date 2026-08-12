@@ -1,21 +1,28 @@
 /**
- * Flora — Module A entry point
+ * Flora — Main Entry Point (Modules A + B + E + Onboarding)
  *
- * Wires the state machine, avatar renderer, debug panel, clock,
- * and window persistence.  Same logic as flora-preview.html's <script>,
- * split into typed modules.
+ * Boot sequence:
+ *   1. DOM ready
+ *   2. If onboarding not complete → show OnboardingFlow
+ *   3. Onboarding completes → FloraCoordinator starts
+ *   4. FloraCoordinator triggers first greeting → morning brief
+ *
+ * §13.1: onboarding is skippable; zero-integration path works
+ * §13.4: NetworkMonitor wired through FloraCoordinator
+ * §13.2: confused + offline states handled by FloraCoordinator
+ * §7:    all LLM failures are silent or show retry — never raw errors
  */
 
-import { FloraStateMachine, STATES } from './states';
-import { AvatarRenderer } from './avatar';
-import { initWindowPersistence } from './persistence';
-import { SignalCoordinator } from './signals';
+import { FloraStateMachine, STATES } from './states.js';
+import { AvatarRenderer } from './avatar.js';
+import { ChatPanel } from './chat.js';
+import { OnboardingFlow } from './onboarding.js';
+import { FloraCoordinator } from './flora.js';
+import { initWindowPersistence } from './persistence.js';
 
-/** Build the debug-button grid — same layout as the preview */
-function buildDebugPanel(
-  container: HTMLElement,
-  sm: FloraStateMachine,
-): void {
+// ── Debug panel ───────────────────────────────────────────────────────────────
+
+function buildDebugPanel(container: HTMLElement, sm: FloraStateMachine): void {
   const keys = Object.keys(STATES);
   for (const key of keys) {
     const btn = document.createElement('button');
@@ -25,59 +32,118 @@ function buildDebugPanel(
     btn.addEventListener('click', () => sm.setState(key));
     container.appendChild(btn);
   }
-
-  // Keep the active highlight in sync
   sm.onStateChange((stateName) => {
     container.querySelectorAll('button').forEach((b) => {
-      b.classList.toggle('active', b.dataset.state === stateName);
+      b.classList.toggle('active', (b as HTMLButtonElement).dataset.state === stateName);
     });
   });
 }
 
-/** Live clock in the readout — same as preview */
+// ── Clock ─────────────────────────────────────────────────────────────────────
+
 function startClock(el: HTMLElement): void {
   function tick() {
     const now = new Date();
     el.textContent =
-      String(now.getHours()).padStart(2, '0') +
-      ':' +
+      String(now.getHours()).padStart(2, '0') + ':' +
       String(now.getMinutes()).padStart(2, '0');
   }
   tick();
   setInterval(tick, 15_000);
 }
 
-/* ---- bootstrap ---- */
+// ── Bootstrap ─────────────────────────────────────────────────────────────────
 
 window.addEventListener('DOMContentLoaded', async () => {
-  const jar = document.getElementById('jar')!;
-  const stateName = document.getElementById('stateName')!;
-  const brief = document.getElementById('brief')!;
-  const controls = document.getElementById('controls')!;
-  const timeNow = document.getElementById('timeNow')!;
+  // ── DOM refs ──
+  const jar        = document.getElementById('jar')!;
+  const stateName  = document.getElementById('stateName')!;
+  const brief      = document.getElementById('brief')!;
+  const toast      = document.getElementById('toast')!;
+  const proactive  = document.getElementById('proactive')!;
+  const controls   = document.getElementById('controls')!;
+  const timeNow    = document.getElementById('timeNow')!;
+  const chatPanel  = document.getElementById('chat-panel')!;
+  const onboardEl  = document.getElementById('onboarding-overlay')!;
 
-  // State machine + renderer
+  // ── State machine + renderer ──
   const sm = new FloraStateMachine('idle');
-  const renderer = new AvatarRenderer(jar, stateName, brief);
+  const renderer = new AvatarRenderer(jar, stateName, brief, toast, proactive);
 
-  sm.onStateChange((name, config) => renderer.update(name, config));
+  sm.onStateChange((name, config) => {
+    renderer.update(name, config);
+
+    // On greeting entry: request a morning brief (handled by coordinator)
+    if (name === 'greeting' && coordinator) {
+      const timeOfDay = getTimeOfDay();
+      coordinator.onGreeting({ timeOfDay });
+    }
+  });
 
   // Apply initial state visually
   renderer.update('idle', STATES.idle);
 
-  // Debug controls
+  // ── Debug controls ──
   buildDebugPanel(controls, sm);
 
-  // Clock
+  // ── Clock ──
   startClock(timeNow);
 
-  // Window persistence (Tauri-only, no-ops in browser)
+  // ── Window persistence (Tauri-only, no-ops in browser) ──
   await initWindowPersistence();
 
-  // Signal coordinator — polls OS idle time → State Engine → state machine.
-  // Fails silently outside Tauri (invoke rejects, engine gets null signal).
-  const signals = new SignalCoordinator(sm);
-  signals.start();
+  // ── Chat panel ──
+  const chat = new ChatPanel(chatPanel);
 
-  console.log('[Flora] Modules A+B ready — shell, engine, idle signals active');
+  // Click the avatar jar to open chat
+  renderer.setJarClickable(() => {
+    if (chat.isOpen()) {
+      chat.close();
+    } else {
+      chat.open();
+    }
+  });
+
+  // ── Coordinator reference (set after onboarding) ──
+  let coordinator: FloraCoordinator | null = null;
+
+  // ── Onboarding ──
+  const startApp = (result: import('./onboarding.js').OnboardingResult) => {
+    coordinator = new FloraCoordinator({
+      sm,
+      renderer,
+      chatPanel: chat,
+      onboarding: result,
+    });
+    coordinator.start();
+
+    // Trigger first greeting
+    sm.trigger('app_launch');
+
+    console.log('[Flora] All modules active — onboarding complete');
+  };
+
+  if (OnboardingFlow.isComplete()) {
+    // Return visit — restore API key from session if available
+    const savedKey = OnboardingFlow.getSessionApiKey();
+    const savedLocation = localStorage.getItem('flora.location') ?? null;
+    startApp({
+      geminiApiKey: savedKey,
+      location: savedLocation,
+      calendarEnabled: true,
+    });
+  } else {
+    // First run — show onboarding
+    const flow = new OnboardingFlow(onboardEl, startApp);
+    flow.start();
+  }
 });
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function getTimeOfDay(): 'morning' | 'afternoon' | 'evening' {
+  const h = new Date().getHours();
+  if (h < 12) return 'morning';
+  if (h < 18) return 'afternoon';
+  return 'evening';
+}

@@ -155,9 +155,10 @@ function wrapRealClient(apiKey: string): GeminiClientInterface {
       return {
         text: () => raw.text ?? null,
         functionCalls: () => {
-          const calls = raw.functionCalls();
+          // raw.functionCalls is a getter property, not a method
+          const calls = raw.functionCalls;
           if (!calls || calls.length === 0) return undefined;
-          return calls.map(c => ({
+          return calls.map((c: { name?: string; args?: Record<string, unknown> }) => ({
             name: c.name ?? '',
             args: (c.args ?? {}) as Record<string, unknown>,
           }));

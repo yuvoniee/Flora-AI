@@ -1,5 +1,5 @@
-/**
- * Signal Coordinator — Module A+B bridge
+ /**
+ * Signal Coordinator — Module A+B+E bridge
  *
  * Polls raw sensor data (OS idle time) on a fixed interval (§13.6),
  * feeds each snapshot through the State Engine (Module B), and
@@ -7,26 +7,43 @@
  *
  * Flow:  poll() → SignalSnapshot → evaluate() → sm.setState()
  *
+ * Module E wiring (§7):
+ *   When evaluate() emits a proactiveMessage category, the coordinator
+ *   calls onProactiveMessage callbacks. FloraCoordinator listens and
+ *   calls generateProactiveMessage() — result is fire-and-forget:
+ *   null/failure is a silent skip per §7.
+ *
  * This module contains NO mood-decision logic — that lives entirely
  * in engine.ts as a pure function.
+ * This module contains NO LLM call logic — that lives in flora.ts.
  */
 
 import { invoke } from '@tauri-apps/api/core';
-import { FloraStateMachine } from './states';
+import { FloraStateMachine } from './states.js';
 import {
   evaluate,
   initialHistory,
   DEFAULT_CONFIG,
-  SignalSnapshot,
-  EngineHistory,
-  EngineConfig,
-} from './engine';
+  type SignalSnapshot,
+  type EngineHistory,
+  type EngineConfig,
+} from './engine.js';
+import type { ReasoningEngine, SignalContext } from './llm/reasoning.js';
+
+// ── Types ─────────────────────────────────────────────────────────────────────
+
+export type ProactiveMessageCallback = (
+  trigger: string,
+  signals: SignalContext,
+) => void;
 
 export interface SignalCoordinatorConfig {
   /** Poll interval in ms — §13.6: 30-60 s, not continuous */
   pollIntervalMs: number;
   /** Engine tuning overrides (thresholds, rate limits) */
   engine?: Partial<EngineConfig>;
+  /** Reasoning engine — passed in so coordinator can build signal context */
+  reasoningEngine?: ReasoningEngine;
 }
 
 const SIGNAL_DEFAULTS: SignalCoordinatorConfig = {
@@ -39,6 +56,7 @@ export class SignalCoordinator {
   private engineCfg: EngineConfig;
   private history: EngineHistory;
   private timer: ReturnType<typeof setInterval> | null = null;
+  private proactiveCallbacks: ProactiveMessageCallback[] = [];
 
   constructor(
     sm: FloraStateMachine,
@@ -80,6 +98,15 @@ export class SignalCoordinator {
     this.history = { ...this.history, mutedUntil: null };
   }
 
+  /**
+   * Register a callback that fires when Module B emits a proactive trigger.
+   * The callback receives the trigger name and current SignalContext.
+   * FloraCoordinator uses this to call Module E's generateProactiveMessage().
+   */
+  onProactiveMessage(cb: ProactiveMessageCallback): void {
+    this.proactiveCallbacks.push(cb);
+  }
+
   private async poll(): Promise<void> {
     // ── 1. Collect raw signals ──
     let idleSeconds: number | null;
@@ -100,19 +127,36 @@ export class SignalCoordinator {
     };
     const result = evaluate(signals, this.history, this.engineCfg);
 
-    // ── 3. Apply output ──
+    // ── 3. Apply mood output ──
     if (result.mood !== this.sm.getState()) {
       this.sm.setState(result.mood);
     }
 
+    // ── 4. Fire proactive callbacks (Module E wiring) ──
     if (result.proactiveMessage) {
       console.log(
-        `[Flora/engine] proactive: ${result.proactiveMessage} ` +
+        `[Flora/signals] proactive trigger: ${result.proactiveMessage} ` +
           `(reason: ${result.reason})`,
       );
-      // Future: Module E feeds this to the LLM for text generation
+
+      // Build SignalContext from current signals (§11: category labels only)
+      const signalCtx: SignalContext = {
+        idleDurationMs: idleSeconds ? idleSeconds * 1000 : undefined,
+        timeOfDay: this.getTimeOfDay(),
+      };
+
+      for (const cb of this.proactiveCallbacks) {
+        cb(result.proactiveMessage, signalCtx);
+      }
     }
 
     this.history = result.history;
+  }
+
+  private getTimeOfDay(): 'morning' | 'afternoon' | 'evening' {
+    const hour = new Date().getHours();
+    if (hour < 12) return 'morning';
+    if (hour < 18) return 'afternoon';
+    return 'evening';
   }
 }

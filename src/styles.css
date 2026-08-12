@@ -25,6 +25,7 @@
   --c-sleepy: #9c8fc9;
   --c-thinking: #7ed4e0;
   --c-offline: #5b6660;
+  --c-confused: #d4a76a;   /* §13.2: warm amber — puzzled but not alarmed */
 
   --accent: var(--c-idle);
 }
@@ -445,3 +446,420 @@ html, body {
   flex-shrink: 0;
   padding-bottom: 4px;
 }
+
+/* ============================================
+   STATE: CONFUSED — tilted eyes, amber glow (§13.2)
+   ============================================ */
+.jar.is-confused .eye {
+  border-radius: 2px;
+  transform: rotate(-10deg);
+  transition: all 300ms ease;
+}
+.jar.is-confused .eye:last-child { transform: rotate(10deg); }
+.jar.is-confused .head { animation-name: wobble; animation-duration: 600ms; animation-iteration-count: infinite; }
+@keyframes wobble {
+  0%, 100% { transform: translateX(-50%) rotate(-3deg); }
+  50% { transform: translateX(-50%) rotate(3deg); }
+}
+
+/* ============================================
+   TOAST — §13.2 integration-failure notice
+   (shown for 3 s during confused state)
+   ============================================ */
+.toast {
+  width: 100%;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 250ms ease, opacity 200ms ease, padding 250ms ease;
+  background: color-mix(in srgb, var(--c-confused) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-confused) 35%, transparent);
+  border-radius: 8px;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--c-confused) 90%, var(--cream));
+  text-align: center;
+  flex-shrink: 0;
+}
+.toast.show {
+  max-height: 40px;
+  opacity: 1;
+  padding: 8px 12px;
+}
+
+/* ============================================
+   PROACTIVE MESSAGE PANEL — §7 Module E output
+   (auto-hides after 12 s)
+   ============================================ */
+.proactive {
+  width: 100%;
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 400ms ease, opacity 350ms ease, padding 400ms ease;
+  background: rgba(237, 231, 218, 0.04);
+  border: 1px solid rgba(237, 231, 218, 0.08);
+  border-radius: 10px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--cream-dim);
+  font-family: 'Fraunces', serif;
+  font-weight: 300;
+  flex-shrink: 0;
+}
+.proactive.show {
+  max-height: 80px;
+  opacity: 1;
+  padding: 10px 14px;
+}
+
+/* ============================================
+   BRIEF — stale variant (§13.4 offline mode)
+   ============================================ */
+.brief--stale {
+  border-color: color-mix(in srgb, var(--c-offline) 40%, rgba(237, 231, 218, 0.08));
+  color: color-mix(in srgb, var(--cream-dim) 60%, var(--c-offline));
+  font-style: italic;
+}
+
+/* ============================================
+   CHAT PANEL — §13.3 in-widget, §13.4 offline guard
+   ============================================ */
+.chat-panel {
+  position: fixed;
+  bottom: 16px;
+  left: 16px;
+  right: 16px;
+  height: 340px;
+  background: var(--bg-panel);
+  border: 1px solid rgba(237, 231, 218, 0.10);
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 20px 50px -10px rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(20px);
+  transform: translateY(calc(100% + 20px));
+  opacity: 0;
+  transition: transform 380ms cubic-bezier(0.34, 1.3, 0.64, 1), opacity 280ms ease;
+  pointer-events: none;
+  z-index: 100;
+}
+.chat-panel.open {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.chat-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid rgba(237, 231, 218, 0.06);
+  flex-shrink: 0;
+}
+.chat-title {
+  font-family: 'Fraunces', serif;
+  font-weight: 500;
+  font-size: 14px;
+  color: var(--cream);
+  letter-spacing: 0.02em;
+}
+.chat-close {
+  background: none;
+  border: none;
+  color: var(--cream-faint);
+  font-size: 12px;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+  transition: color 150ms, background 150ms;
+}
+.chat-close:hover { color: var(--cream); background: rgba(237, 231, 218, 0.08); }
+
+/* §13.4: offline banner inside chat */
+.chat-offline-banner {
+  display: none;
+  padding: 8px 16px;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--c-offline) 80%, var(--cream-dim));
+  background: color-mix(in srgb, var(--c-offline) 10%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--c-offline) 25%, transparent);
+  text-align: center;
+  flex-shrink: 0;
+}
+.chat-offline-banner.show { display: block; }
+
+.chat-messages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(237, 231, 218, 0.12) transparent;
+}
+
+.chat-msg {
+  max-width: 86%;
+  padding: 8px 12px;
+  border-radius: 12px;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.chat-msg--user {
+  align-self: flex-end;
+  background: color-mix(in srgb, var(--accent) 18%, rgba(237, 231, 218, 0.06));
+  border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+  color: var(--cream);
+}
+.chat-msg--flora {
+  align-self: flex-start;
+  background: rgba(237, 231, 218, 0.05);
+  border: 1px solid rgba(237, 231, 218, 0.09);
+  color: var(--cream-dim);
+  font-family: 'Fraunces', serif;
+  font-weight: 300;
+}
+.chat-msg--thinking {
+  opacity: 0.5;
+  font-style: italic;
+  animation: pulse-opacity 1.2s ease-in-out infinite;
+}
+@keyframes pulse-opacity {
+  0%, 100% { opacity: 0.3; }
+  50% { opacity: 0.6; }
+}
+.chat-msg--error {
+  align-self: flex-start;
+  font-size: 10px;
+  color: color-mix(in srgb, var(--c-confused) 90%, var(--cream-dim));
+  background: color-mix(in srgb, var(--c-confused) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-confused) 25%, transparent);
+  border-radius: 10px;
+  padding: 6px 10px;
+}
+.chat-retry {
+  background: none;
+  border: 1px solid color-mix(in srgb, var(--c-confused) 45%, transparent);
+  border-radius: 6px;
+  color: color-mix(in srgb, var(--c-confused) 90%, var(--cream));
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 9px;
+  padding: 2px 8px;
+  margin-left: 6px;
+  cursor: pointer;
+  transition: background 150ms;
+}
+.chat-retry:hover { background: color-mix(in srgb, var(--c-confused) 14%, transparent); }
+
+.chat-input-row {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(237, 231, 218, 0.06);
+  flex-shrink: 0;
+}
+.chat-input {
+  flex: 1;
+  background: rgba(237, 231, 218, 0.05);
+  border: 1px solid rgba(237, 231, 218, 0.12);
+  border-radius: 10px;
+  color: var(--cream);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  padding: 8px 12px;
+  outline: none;
+  transition: border-color 200ms;
+}
+.chat-input:focus { border-color: color-mix(in srgb, var(--accent) 50%, transparent); }
+.chat-input:disabled { opacity: 0.4; cursor: not-allowed; }
+.chat-input::placeholder { color: var(--cream-faint); }
+.chat-send {
+  background: color-mix(in srgb, var(--accent) 22%, rgba(237, 231, 218, 0.06));
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 10px;
+  color: var(--cream);
+  font-size: 15px;
+  width: 36px;
+  height: 36px;
+  cursor: pointer;
+  transition: background 180ms;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.chat-send:hover { background: color-mix(in srgb, var(--accent) 35%, rgba(237, 231, 218, 0.08)); }
+.chat-send:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* ============================================
+   ONBOARDING OVERLAY — §13.1
+   ============================================ */
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 15, 12, 0.92);
+  backdrop-filter: blur(12px);
+  display: none;
+  align-items: center;
+  justify-content: center;
+  z-index: 200;
+  padding: 20px;
+}
+.onboarding-overlay.active {
+  display: flex;
+  animation: ob-fade-in 350ms ease;
+}
+@keyframes ob-fade-in {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+.ob-card {
+  background: var(--bg-panel);
+  border: 1px solid rgba(237, 231, 218, 0.10);
+  border-radius: 18px;
+  padding: 32px 28px 24px;
+  max-width: 320px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  box-shadow: 0 30px 80px -20px rgba(0, 0, 0, 0.8);
+  animation: ob-card-in 350ms cubic-bezier(0.34, 1.3, 0.64, 1);
+}
+@keyframes ob-card-in {
+  from { opacity: 0; transform: scale(0.93) translateY(16px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+.ob-card--done { border-color: color-mix(in srgb, var(--c-greeting) 30%, rgba(237, 231, 218, 0.10)); }
+
+.ob-progress {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.ob-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: rgba(237, 231, 218, 0.15);
+  transition: background 300ms;
+}
+.ob-dot--active { background: var(--c-greeting); }
+.ob-dot--done {
+  background: color-mix(in srgb, var(--c-greeting) 50%, rgba(237, 231, 218, 0.15));
+}
+
+.ob-icon {
+  font-size: 36px;
+  line-height: 1;
+}
+.ob-icon--done { animation: ob-sprout 600ms cubic-bezier(0.34, 1.6, 0.64, 1); }
+@keyframes ob-sprout {
+  from { transform: scale(0.3) rotate(-20deg); opacity: 0; }
+  to   { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+
+.ob-title {
+  font-family: 'Fraunces', serif;
+  font-weight: 500;
+  font-size: 22px;
+  color: var(--cream);
+  letter-spacing: 0.01em;
+  text-align: center;
+}
+
+.ob-body {
+  font-size: 11px;
+  line-height: 1.65;
+  color: var(--cream-dim);
+  text-align: center;
+}
+.ob-body--dim { color: var(--cream-faint); font-size: 10px; }
+
+.ob-notice {
+  font-size: 9px;
+  line-height: 1.55;
+  color: color-mix(in srgb, var(--c-confused) 80%, var(--cream-faint));
+  background: color-mix(in srgb, var(--c-confused) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--c-confused) 20%, transparent);
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: left;
+  width: 100%;
+}
+.ob-notice a { color: inherit; opacity: 0.8; }
+
+.ob-storage-note {
+  font-size: 9px !important;
+  margin-top: -4px;
+}
+
+.ob-label {
+  font-size: 10px;
+  color: var(--cream-dim);
+  align-self: flex-start;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ob-input {
+  width: 100%;
+  background: rgba(237, 231, 218, 0.05);
+  border: 1px solid rgba(237, 231, 218, 0.14);
+  border-radius: 10px;
+  color: var(--cream);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  padding: 10px 12px;
+  outline: none;
+  transition: border-color 200ms;
+}
+.ob-input:focus { border-color: color-mix(in srgb, var(--c-greeting) 60%, transparent); }
+.ob-input::placeholder { color: var(--cream-faint); }
+
+.ob-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 4px;
+}
+
+.ob-btn {
+  width: 100%;
+  padding: 12px;
+  border-radius: 12px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 180ms ease;
+  border: none;
+}
+.ob-btn--primary {
+  background: color-mix(in srgb, var(--c-greeting) 25%, rgba(237, 231, 218, 0.08));
+  border: 1px solid color-mix(in srgb, var(--c-greeting) 45%, transparent);
+  color: var(--cream);
+}
+.ob-btn--primary:hover {
+  background: color-mix(in srgb, var(--c-greeting) 38%, rgba(237, 231, 218, 0.08));
+}
+
+.ob-link {
+  background: none;
+  border: none;
+  color: var(--cream-faint);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 10px;
+  cursor: pointer;
+  padding: 4px;
+  transition: color 150ms;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  text-decoration-color: rgba(237, 231, 218, 0.2);
+}
+.ob-link:hover { color: var(--cream-dim); }

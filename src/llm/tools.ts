@@ -23,6 +23,7 @@
  */
 
 import type { FunctionDeclaration } from '@google/genai';
+import { Type } from '@google/genai';
 import type { WeatherData } from '../weather.js';
 import type { CalendarEvent } from '../calendar.js';
 import type { FileActivity } from '../files.js';
@@ -100,10 +101,10 @@ export const FLORA_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       "Get the current weather for the user's saved location. " +
       'Returns temperature and a plain-English condition string, or null if unavailable.',
     parameters: {
-      type: 'object',
+      type: Type.OBJECT,
       properties: {
         location: {
-          type: 'string',
+          type: Type.STRING,
           description: 'Optional location override (city name or "lat,lon"). Uses saved location if omitted.',
         },
       },
@@ -116,10 +117,10 @@ export const FLORA_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       'Returns an array of events with title, start time, end time, and optional location. ' +
       'Returns an empty array if there are no events or the calendar is unreachable.',
     parameters: {
-      type: 'object',
+      type: Type.OBJECT,
       properties: {
         date: {
-          type: 'string',
+          type: Type.STRING,
           description: 'ISO 8601 date string (e.g. "2026-08-12"). Defaults to today if omitted.',
         },
       },
@@ -132,14 +133,14 @@ export const FLORA_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       'Returns metadata only (filename, type category, modified time) — never file contents. ' +
       'Returns an empty array if no recent activity or the folder is inaccessible.',
     parameters: {
-      type: 'object',
+      type: Type.OBJECT,
       properties: {
         folder: {
-          type: 'string',
+          type: Type.STRING,
           description: 'Absolute path to the folder to scan. Uses the configured default if omitted.',
         },
         lookback_minutes: {
-          type: 'number',
+          type: Type.NUMBER,
           description: 'How many minutes back to look for modifications. Default: 15.',
         },
       },
@@ -152,7 +153,7 @@ export const FLORA_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
       'Returns track title, artist, album, and whether it is playing or paused. ' +
       'Returns null if nothing is playing, Spotify is not connected, or the API is unreachable.',
     parameters: {
-      type: 'object',
+      type: Type.OBJECT,
       properties: {},
     },
   },

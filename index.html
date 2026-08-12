@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Flora</title>
+  <meta name="description" content="Flora — a quiet AI companion for your workday." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,300;9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/src/styles.css" />
@@ -11,10 +12,8 @@
 </head>
 <body>
 
-  <!--
-    Structure ported verbatim from flora-preview.html.
-    The custom titlebar is the only addition (Tauri drag region).
-  -->
+  <!-- ── Onboarding overlay (§13.1) ── renders inside by OnboardingFlow.ts -->
+  <div id="onboarding-overlay" class="onboarding-overlay" role="dialog" aria-label="Flora setup"></div>
 
   <div class="stage">
     <!-- Custom titlebar — Tauri drag region for frameless window -->
@@ -22,11 +21,12 @@
       <span data-tauri-drag-region>Flora</span>
     </div>
 
-    <div class="eyebrow"><b>Module A</b> — shell &amp; avatar · debug</div>
+    <div class="eyebrow"><b>Flora</b> · your day, quietly</div>
 
+    <!-- ── Avatar jar ── clickable → opens chat panel -->
     <div class="jar-wrap">
       <div class="halo" id="halo"></div>
-      <div class="jar" id="jar">
+      <div class="jar" id="jar" role="button" aria-label="Open chat with Flora" tabindex="0">
         <div class="fog"></div>
         <div class="jar-rim"></div>
         <div class="droplet" style="top:22%; left:16%;"></div>
@@ -57,22 +57,56 @@
       </div>
     </div>
 
+    <!-- ── Readout: state name + clock ── -->
     <div class="readout">
       <span class="state-name" id="stateName">Idle</span>
       <span class="dash">·</span>
       <span class="time" id="timeNow">00:00</span>
     </div>
 
+    <!-- ── §13.2: toast — integration failure message (confused state) ── -->
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+    <!-- ── §7: proactive message panel ── -->
+    <div id="proactive" class="proactive" role="status" aria-live="polite"></div>
+
+    <!-- ── Morning brief / stale brief (§13.4) ── -->
+    <div id="brief" class="brief" role="region" aria-label="Morning brief"></div>
+
+    <!-- ── Debug state controls ── -->
     <div class="controls" id="controls"></div>
 
-    <div class="brief" id="brief">
-      Good morning. <b>3 tasks</b> today, first one's due at 11:00.
-      Light rain moves in this afternoon — 62°F now.
+    <!-- ── §13.4: caption (replaces old placeholder text) ── -->
+    <div class="caption" id="caption">
+      Click Flora to chat · integrations connect in settings
+    </div>
+  </div>
+
+  <!-- ── Chat panel (§13.3 in-widget only) ── -->
+  <div id="chat-panel" class="chat-panel" role="dialog" aria-label="Chat with Flora">
+    <div class="chat-header">
+      <span class="chat-title">Flora</span>
+      <button id="chat-close" class="chat-close" aria-label="Close chat">✕</button>
     </div>
 
-    <div class="caption">
-      Manual triggers stand in for real signals (idle timer, task events,<br />
-      calendar proximity) until Module B's state engine is wired in.
+    <!-- §13.4: offline banner — shown when network is lost -->
+    <div id="chat-offline-banner" class="chat-offline-banner">
+      Flora is offline — reconnect to continue chatting.
+    </div>
+
+    <div id="chat-messages" class="chat-messages" role="log" aria-live="polite"></div>
+
+    <div class="chat-input-row">
+      <input
+        id="chat-input"
+        class="chat-input"
+        type="text"
+        placeholder="Ask Flora anything…"
+        autocomplete="off"
+        spellcheck="false"
+        aria-label="Message Flora"
+      />
+      <button id="chat-send" class="chat-send" aria-label="Send message">↑</button>
     </div>
   </div>
 
