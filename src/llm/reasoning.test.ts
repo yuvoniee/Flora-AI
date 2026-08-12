@@ -1,56 +1,47 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import Anthropic from '@anthropic-ai/sdk';
 import {
   createReasoningEngine,
   countSentences,
   trimToSentences,
   type ChatMessage,
   type SignalContext,
+  type GeminiClientInterface,
+  type GeminiGenerateResult,
 } from './reasoning.js';
-import { validateToolResult, serializeToolResult } from './tools.js';
+import { validateToolResult, serializeToolResult, serializeToolResultString } from './tools.js';
 
-// ── Anthropic mock helpers ────────────────────────────────────────────────────
+// ── Gemini mock helpers ───────────────────────────────────────────────────────
+//
+// All mocks implement GeminiClientInterface — zero dependency on the real SDK.
 
-/** Build a fake Claude text-only response */
-function makeTextResponse(text: string): Anthropic.Message {
+/** Build a fake Gemini text-only result */
+function makeTextResult(text: string): GeminiGenerateResult {
   return {
-    id: 'msg_test',
-    type: 'message',
-    role: 'assistant',
-    content: [{ type: 'text', text }],
-    model: 'claude-opus-4-5',
-    stop_reason: 'end_turn',
-    stop_sequence: null,
-    usage: { input_tokens: 10, output_tokens: 20 },
+    text: () => text,
+    functionCalls: () => undefined,
   };
 }
 
-/** Build a fake Claude tool_use response */
-function makeToolUseResponse(toolName: string, toolId: string, input: Record<string, unknown> = {}): Anthropic.Message {
+/** Build a fake Gemini function-call result */
+function makeFunctionCallResult(
+  calls: Array<{ name: string; args?: Record<string, unknown> }>
+): GeminiGenerateResult {
   return {
-    id: 'msg_test_tool',
-    type: 'message',
-    role: 'assistant',
-    content: [{ type: 'tool_use', id: toolId, name: toolName, input }],
-    model: 'claude-opus-4-5',
-    stop_reason: 'tool_use',
-    stop_sequence: null,
-    usage: { input_tokens: 15, output_tokens: 25 },
+    text: () => null,
+    functionCalls: () => calls.map(c => ({ name: c.name, args: c.args ?? {} })),
   };
 }
 
-/** Create a mock Anthropic client */
-function mockClient(responses: Anthropic.Message[]): Anthropic {
+/** Create a mock GeminiClientInterface */
+function mockGeminiClient(results: GeminiGenerateResult[]): GeminiClientInterface {
   let callCount = 0;
   return {
-    messages: {
-      create: vi.fn().mockImplementation(async () => {
-        const res = responses[callCount] ?? responses[responses.length - 1];
-        callCount++;
-        return res;
-      }),
-    },
-  } as unknown as Anthropic;
+    generateContent: vi.fn().mockImplementation(async () => {
+      const res = results[callCount] ?? results[results.length - 1];
+      callCount++;
+      return res;
+    }),
+  };
 }
 
 /** Create a simple mock tool dispatcher */
@@ -149,31 +140,38 @@ describe('§11 tool result validator', () => {
 // ── serializeToolResult ───────────────────────────────────────────────────────
 
 describe('serializeToolResult', () => {
-  it('serializes a non-null result to JSON', () => {
+  it('wraps a non-null result in { result: ... }', () => {
     const result = { temp: 22, condition: 'Sunny' };
-    expect(serializeToolResult('get_weather', result)).toContain('"temp":22');
+    const out = serializeToolResult('get_weather', result);
+    expect(out).toEqual({ result });
   });
 
-  it('returns a descriptive string for null', () => {
+  it('returns { result: null, note } for null', () => {
     const out = serializeToolResult('get_weather', null);
-    expect(out).toContain('null');
-    expect(out).toContain('get_weather');
+    expect(out.result).toBeNull();
+    expect(typeof out.note).toBe('string');
+    expect(out.note as string).toContain('get_weather');
   });
 
-  it('returns a descriptive string for empty array', () => {
+  it('returns { result: [], note } for empty array', () => {
     const out = serializeToolResult('get_calendar_events', []);
-    expect(out).toContain('[]');
-    expect(out).toContain('get_calendar_events');
+    expect(out.result).toEqual([]);
+    expect(out.note as string).toContain('get_calendar_events');
+  });
+
+  it('serializeToolResultString produces JSON string', () => {
+    const out = serializeToolResultString('get_weather', { temp: 18 });
+    expect(out).toContain('"temp":18');
   });
 });
 
 // ── generateMorningBrief ──────────────────────────────────────────────────────
 
 describe('Module E — generateMorningBrief', () => {
-  it('returns a string when Claude responds with text', async () => {
+  it('returns a string when Gemini responds with text', async () => {
     const engine = createReasoningEngine({
       apiKey: 'test',
-      _customClient: mockClient([makeTextResponse('It\'s 22°C and partly cloudy. Nothing on your calendar today.')]),
+      _customClient: mockGeminiClient([makeTextResult("It's 22°C and partly cloudy. Nothing on your calendar today.")]),
       toolDispatcher: makeDispatcher(),
     });
 
@@ -182,13 +180,13 @@ describe('Module E — generateMorningBrief', () => {
     expect(brief).not.toBeNull();
   });
 
-  it('uses tool results when Claude calls get_weather then responds', async () => {
+  it('resolves a tool call and uses the result', async () => {
     const dispatcher = makeDispatcher({ get_weather: { temp: 18, condition: 'Cloudy' } });
     const engine = createReasoningEngine({
       apiKey: 'test',
-      _customClient: mockClient([
-        makeToolUseResponse('get_weather', 'tool_1'),
-        makeTextResponse('It\'s 18°C and cloudy. No meetings today.'),
+      _customClient: mockGeminiClient([
+        makeFunctionCallResult([{ name: 'get_weather' }]),
+        makeTextResult("It's 18°C and cloudy. No meetings today."),
       ]),
       toolDispatcher: dispatcher,
     });
@@ -199,9 +197,9 @@ describe('Module E — generateMorningBrief', () => {
   });
 
   it('returns null on API failure (§7 — graceful degradation)', async () => {
-    const failClient = {
-      messages: { create: vi.fn().mockRejectedValue(new Error('Network timeout')) },
-    } as unknown as Anthropic;
+    const failClient: GeminiClientInterface = {
+      generateContent: vi.fn().mockRejectedValue(new Error('Network timeout')),
+    };
 
     const engine = createReasoningEngine({ apiKey: 'test', _customClient: failClient, toolDispatcher: makeDispatcher() });
     const brief = await engine.generateMorningBrief();
@@ -209,15 +207,13 @@ describe('Module E — generateMorningBrief', () => {
   });
 
   it('returns null on API timeout (aborted request)', async () => {
-    const timeoutClient = {
-      messages: {
-        create: vi.fn().mockImplementation(() => {
-          const err = new Error('Request aborted');
-          err.name = 'AbortError';
-          return Promise.reject(err);
-        }),
-      },
-    } as unknown as Anthropic;
+    const timeoutClient: GeminiClientInterface = {
+      generateContent: vi.fn().mockImplementation(() => {
+        const err = new Error('Request aborted');
+        err.name = 'AbortError';
+        return Promise.reject(err);
+      }),
+    };
 
     const engine = createReasoningEngine({
       apiKey: 'test',
@@ -239,7 +235,7 @@ describe('Module E — generateMorningBrief', () => {
 
     const engine = createReasoningEngine({
       apiKey: 'test',
-      _customClient: mockClient([makeTextResponse("Couldn't reach weather or calendar today. No recent file activity.")]),
+      _customClient: mockGeminiClient([makeTextResult("Couldn't reach weather or calendar today. No recent file activity.")]),
       toolDispatcher: emptyDispatcher,
     });
 
@@ -250,16 +246,14 @@ describe('Module E — generateMorningBrief', () => {
 
   it('passes SignalContext to the brief prompt', async () => {
     const signals: SignalContext = { timeOfDay: 'morning', windowCategory: 'code_editor' };
-    let capturedMessages: any[] = [];
+    let capturedContents: any[] = [];
 
-    const capturingClient = {
-      messages: {
-        create: vi.fn().mockImplementation(async (params: any) => {
-          capturedMessages = params.messages;
-          return makeTextResponse('Morning brief text.');
-        }),
-      },
-    } as unknown as Anthropic;
+    const capturingClient: GeminiClientInterface = {
+      generateContent: vi.fn().mockImplementation(async (params: any) => {
+        capturedContents = params.contents;
+        return makeTextResult('Morning brief text.');
+      }),
+    };
 
     const engine = createReasoningEngine({
       apiKey: 'test',
@@ -268,9 +262,9 @@ describe('Module E — generateMorningBrief', () => {
     });
 
     await engine.generateMorningBrief(signals);
-    const userContent = capturedMessages[0]?.content as string ?? '';
-    expect(userContent).toContain('morning');
-    expect(userContent).toContain('code_editor');
+    const userText = capturedContents[0]?.parts[0]?.text ?? '';
+    expect(userText).toContain('morning');
+    expect(userText).toContain('code_editor');
   });
 });
 
@@ -280,7 +274,7 @@ describe('Module E — generateProactiveMessage', () => {
   it('returns a 1-2 sentence message for a valid trigger', async () => {
     const engine = createReasoningEngine({
       apiKey: 'test',
-      _customClient: mockClient([makeTextResponse('Your 3pm call starts in 15 minutes.')]),
+      _customClient: mockGeminiClient([makeTextResult('Your 3pm call starts in 15 minutes.')]),
       toolDispatcher: makeDispatcher(),
     });
 
@@ -293,7 +287,7 @@ describe('Module E — generateProactiveMessage', () => {
     const longText = 'Sentence one. Sentence two. Sentence three is too long. Sentence four also.';
     const engine = createReasoningEngine({
       apiKey: 'test',
-      _customClient: mockClient([makeTextResponse(longText)]),
+      _customClient: mockGeminiClient([makeTextResult(longText)]),
       toolDispatcher: makeDispatcher(),
     });
 
@@ -304,9 +298,9 @@ describe('Module E — generateProactiveMessage', () => {
   });
 
   it('returns null silently on API failure (§7 — never surfaces to user)', async () => {
-    const failClient = {
-      messages: { create: vi.fn().mockRejectedValue(new Error('Service unavailable')) },
-    } as unknown as Anthropic;
+    const failClient: GeminiClientInterface = {
+      generateContent: vi.fn().mockRejectedValue(new Error('Service unavailable')),
+    };
 
     const engine = createReasoningEngine({ apiKey: 'test', _customClient: failClient, toolDispatcher: makeDispatcher() });
     // Must not throw
@@ -318,7 +312,7 @@ describe('Module E — generateProactiveMessage', () => {
     const triggers = ['focus_break', 'long_idle', 'new_event', 'now_playing', 'morning_startup', 'focus_ended'] as const;
     const engine = createReasoningEngine({
       apiKey: 'test',
-      _customClient: mockClient([makeTextResponse('One sentence.')]),
+      _customClient: mockGeminiClient([makeTextResult('One sentence.')]),
       toolDispatcher: makeDispatcher(),
     });
 
@@ -335,13 +329,40 @@ describe('Module E — chat', () => {
   it('returns a response for a simple message', async () => {
     const engine = createReasoningEngine({
       apiKey: 'test',
-      _customClient: mockClient([makeTextResponse("You have a meeting at 3pm.")]),
+      _customClient: mockGeminiClient([makeTextResult('You have a meeting at 3pm.')]),
       toolDispatcher: makeDispatcher(),
     });
 
     const messages: ChatMessage[] = [{ role: 'user', content: "What's on my calendar?" }];
     const reply = await engine.chat(messages);
-    expect(reply).toBe("You have a meeting at 3pm.");
+    expect(reply).toBe('You have a meeting at 3pm.');
+  });
+
+  it('maps "assistant" role to "model" role for Gemini', async () => {
+    let capturedContents: any[] = [];
+
+    const capturingClient: GeminiClientInterface = {
+      generateContent: vi.fn().mockImplementation(async (params: any) => {
+        capturedContents = params.contents;
+        return makeTextResult('Reply.');
+      }),
+    };
+
+    const engine = createReasoningEngine({
+      apiKey: 'test',
+      _customClient: capturingClient,
+      toolDispatcher: makeDispatcher(),
+    });
+
+    await engine.chat([
+      { role: 'user', content: 'Hello' },
+      { role: 'assistant', content: 'Hi there.' },
+      { role: 'user', content: 'Any meetings?' },
+    ]);
+
+    expect(capturedContents[1].role).toBe('model');   // 'assistant' mapped → 'model'
+    expect(capturedContents[0].role).toBe('user');
+    expect(capturedContents[2].role).toBe('user');
   });
 
   it('completes a tool-use round-trip', async () => {
@@ -350,9 +371,9 @@ describe('Module E — chat', () => {
     });
     const engine = createReasoningEngine({
       apiKey: 'test',
-      _customClient: mockClient([
-        makeToolUseResponse('get_calendar_events', 'tool_call_1'),
-        makeTextResponse('You have Sprint Planning at 2pm.'),
+      _customClient: mockGeminiClient([
+        makeFunctionCallResult([{ name: 'get_calendar_events' }]),
+        makeTextResult('You have Sprint Planning at 2pm.'),
       ]),
       toolDispatcher: dispatcher,
     });
@@ -363,12 +384,12 @@ describe('Module E — chat', () => {
   });
 
   it('respects max tool depth (§7 — prevents infinite loops)', async () => {
-    // Always returns tool_use, never end_turn → should hit the depth limit
-    const infiniteClient = {
-      messages: {
-        create: vi.fn().mockResolvedValue(makeToolUseResponse('get_weather', 'tool_loop')),
-      },
-    } as unknown as Anthropic;
+    // Always returns a function call, never text → should hit the depth limit
+    const infiniteClient: GeminiClientInterface = {
+      generateContent: vi.fn().mockResolvedValue(
+        makeFunctionCallResult([{ name: 'get_weather' }])
+      ),
+    };
 
     const engine = createReasoningEngine({
       apiKey: 'test',
@@ -379,14 +400,14 @@ describe('Module E — chat', () => {
 
     const reply = await engine.chat([{ role: 'user', content: 'What is the weather?' }]);
     expect(reply).toBeNull();
-    // Should have called Claude exactly maxToolDepth (3) times
-    expect((infiniteClient.messages.create as any).mock.calls.length).toBe(3);
+    // Should have called Gemini exactly maxToolDepth (3) times
+    expect((infiniteClient.generateContent as any).mock.calls.length).toBe(3);
   });
 
   it('returns null on API failure (caller shows retry UI)', async () => {
-    const failClient = {
-      messages: { create: vi.fn().mockRejectedValue(new Error('Connection refused')) },
-    } as unknown as Anthropic;
+    const failClient: GeminiClientInterface = {
+      generateContent: vi.fn().mockRejectedValue(new Error('Connection refused')),
+    };
 
     const engine = createReasoningEngine({ apiKey: 'test', _customClient: failClient, toolDispatcher: makeDispatcher() });
     const reply = await engine.chat([{ role: 'user', content: 'Hello' }]);
@@ -400,15 +421,13 @@ describe('Module E — chat', () => {
       { role: 'user', content: 'Any meetings?' },
     ];
 
-    let capturedMessages: any[] = [];
-    const capturingClient = {
-      messages: {
-        create: vi.fn().mockImplementation(async (params: any) => {
-          capturedMessages = params.messages;
-          return makeTextResponse('You have a 2pm standup.');
-        }),
-      },
-    } as unknown as Anthropic;
+    let capturedContents: any[] = [];
+    const capturingClient: GeminiClientInterface = {
+      generateContent: vi.fn().mockImplementation(async (params: any) => {
+        capturedContents = params.contents;
+        return makeTextResult('You have a 2pm standup.');
+      }),
+    };
 
     const engine = createReasoningEngine({
       apiKey: 'test',
@@ -417,23 +436,21 @@ describe('Module E — chat', () => {
     });
 
     await engine.chat(messages);
-    expect(capturedMessages).toHaveLength(3);
-    expect(capturedMessages[2].content).toBe('Any meetings?');
+    expect(capturedContents).toHaveLength(3);
+    expect(capturedContents[2].parts[0].text).toBe('Any meetings?');
   });
 
-  it('does not call unknown tools (unrecognized tool name returns null)', async () => {
-    const weirdToolClient = {
-      messages: {
-        create: vi.fn()
-          .mockResolvedValueOnce(makeToolUseResponse('hack_the_planet', 'hack_1'))
-          .mockResolvedValueOnce(makeTextResponse('Here is your result.')),
-      },
-    } as unknown as Anthropic;
+  it('handles unrecognized tool names gracefully (returns null for that tool)', async () => {
+    const weirdClient: GeminiClientInterface = {
+      generateContent: vi.fn()
+        .mockResolvedValueOnce(makeFunctionCallResult([{ name: 'hack_the_planet' }]))
+        .mockResolvedValueOnce(makeTextResult('Here is your result.')),
+    };
 
     const dispatcher = makeDispatcher();
     const engine = createReasoningEngine({
       apiKey: 'test',
-      _customClient: weirdToolClient,
+      _customClient: weirdClient,
       toolDispatcher: dispatcher,
     });
 
@@ -463,16 +480,14 @@ describe('§11 — system prompt data minimization', () => {
     expect(FLORA_SYSTEM_PROMPT).toContain('Maximum 2 sentences');
   });
 
-  it('system prompt is passed in every Claude API call', async () => {
-    let capturedSystem = '';
-    const capturingClient = {
-      messages: {
-        create: vi.fn().mockImplementation(async (params: any) => {
-          capturedSystem = params.system;
-          return makeTextResponse('Test response.');
-        }),
-      },
-    } as unknown as Anthropic;
+  it('system prompt is passed as systemInstruction in every Gemini API call', async () => {
+    let capturedSystemInstruction = '';
+    const capturingClient: GeminiClientInterface = {
+      generateContent: vi.fn().mockImplementation(async (params: any) => {
+        capturedSystemInstruction = params.config.systemInstruction;
+        return makeTextResult('Test response.');
+      }),
+    };
 
     const engine = createReasoningEngine({
       apiKey: 'test',
@@ -481,17 +496,27 @@ describe('§11 — system prompt data minimization', () => {
     });
 
     await engine.generateMorningBrief();
-    expect(capturedSystem).toContain('FLORA — CHARACTER SHEET');
-    expect(capturedSystem.length).toBeGreaterThan(500); // not a stub prompt
+    expect(capturedSystemInstruction).toContain('FLORA — CHARACTER SHEET');
+    expect(capturedSystemInstruction.length).toBeGreaterThan(500);
   });
 
   it('SignalContext only allows WindowCategory labels — type is a string union (compile check)', () => {
-    // This test is structural — if it compiles, the type constraint is enforced.
     const signals: SignalContext = {
-      windowCategory: 'code_editor',  // valid
+      windowCategory: 'code_editor',
       timeOfDay: 'morning',
     };
-    // Cannot assign a raw title: signals.windowCategory = 'My - Email Subject' would be a type error
     expect(signals.windowCategory).toBe('code_editor');
+  });
+
+  it('function declarations reference the Gemini tool list (not Anthropic)', async () => {
+    const { FLORA_GEMINI_TOOLS } = await import('./tools.js');
+    expect(FLORA_GEMINI_TOOLS).toHaveLength(1);
+    expect(FLORA_GEMINI_TOOLS[0]).toHaveProperty('functionDeclarations');
+    const decls = FLORA_GEMINI_TOOLS[0].functionDeclarations;
+    const names = decls.map((d: any) => d.name);
+    expect(names).toContain('get_weather');
+    expect(names).toContain('get_calendar_events');
+    expect(names).toContain('get_notes_activity');
+    expect(names).toContain('get_now_playing');
   });
 });

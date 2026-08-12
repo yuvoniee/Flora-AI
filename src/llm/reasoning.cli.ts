@@ -1,8 +1,11 @@
 /**
  * Module E — LLM Reasoning Standalone CLI Runner
  *
- * Tests all three reasoning functions against the real Claude API.
- * Reads ANTHROPIC_API_KEY from env — never hardcoded.
+ * Tests all three reasoning functions against the real Gemini API (gemini-2.0-flash).
+ * Reads GEMINI_API_KEY from env — never hardcoded.
+ *
+ * ⚠️  FREE-TIER NOTE: Free-tier Gemini requests may be used by Google to improve
+ * their models. Swap to a paid tier before handling real personal data long-term.
  *
  * Usage:
  *   npx tsx src/llm/reasoning.cli.ts --print-sheet      # print & review character sheet
@@ -152,12 +155,13 @@ async function main(): Promise<void> {
   }
 
   // All remaining modes need a real API key
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
     console.error(
-      '❌ ANTHROPIC_API_KEY not set.\n' +
-      '   Set ANTHROPIC_API_KEY=<your-key> and re-run.\n' +
-      '   In production the key is read from the OS keychain — never hardcoded.'
+      '❌ GEMINI_API_KEY not set.\n' +
+      '   Set GEMINI_API_KEY=<your-key> and re-run.\n' +
+      '   In production the key is read from the OS keychain — never hardcoded.\n' +
+      '   ⚠️  Free-tier requests may be used by Google to improve their models.'
     );
     process.exit(1);
   }
@@ -279,7 +283,9 @@ Flora LLM Reasoning CLI (Module E)
   --chat "<message>"              Direct chat
 
 Environment:
-  ANTHROPIC_API_KEY=<key>         Required for all modes except --print-sheet and --test-failure
+  GEMINI_API_KEY=<key>            Required for all modes except --print-sheet and --test-failure
+                                  Free tier: data may be used for model training. Use paid tier
+                                  before handling real personal data.
 `);
 }
 

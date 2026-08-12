@@ -1,19 +1,28 @@
 /**
- * Module E — Claude Tool Schemas
+ * Module E — Gemini Tool Schemas
  *
- * Defines the four tool-use function schemas passed to the Claude API,
+ * Defines the four function-calling schemas passed to the Gemini API,
  * plus the dispatcher that resolves tool calls to real Module D integrations.
  *
  * §7 requirement: "define the function-calling schema for each integration
  * up front so the LLM layer is just orchestration, not custom parsing per feature."
  *
  * §11 boundary: the dispatcher validates tool results before returning them
- * to Claude. Any result containing raw sensitive strings (window titles, file
+ * to Gemini. Any result containing raw sensitive strings (window titles, file
  * contents, OAuth tokens) is replaced with null/[] and a warning is logged.
- * The Claude API payload never receives raw sensitive data.
+ * The Gemini API payload never receives raw sensitive data.
+ *
+ * Switched from Anthropic (claude-opus-4-5) to Google Gemini (gemini-2.0-flash)
+ * on 2026-08-12 to use the free tier.
+ *
+ * ⚠️  FREE-TIER PRIVACY NOTE: Requests made through the Gemini API free tier
+ * may be used by Google to improve their models. Before this app handles real
+ * personal data long-term (calendar events, file names, music history), swap
+ * to a paid Gemini tier where data is not used for training. See:
+ * https://ai.google.dev/gemini-api/terms
  */
 
-import type { Tool } from '@anthropic-ai/sdk/resources/messages.js';
+import type { FunctionDeclaration } from '@google/genai';
 import type { WeatherData } from '../weather.js';
 import type { CalendarEvent } from '../calendar.js';
 import type { FileActivity } from '../files.js';
@@ -39,7 +48,8 @@ export type ToolDispatcher = (
 //
 // Checks that no tool result contains fields that violate the data-minimization
 // rules. If a violation is detected, the result is replaced with null/[] so
-// the offending data never reaches the Claude API payload.
+// the offending data never reaches the Gemini API payload.
+// This logic is unchanged from the Anthropic version — it is API-agnostic.
 
 const FORBIDDEN_RESULT_FIELDS = ['rawTitle', 'contents', 'content', 'token', 'accessToken', 'refreshToken'];
 
@@ -51,7 +61,7 @@ export function validateToolResult(name: string, result: unknown): unknown {
       if (field in obj && typeof obj[field] === 'string' && (obj[field] as string).length > 0) {
         console.warn(
           `[Flora/llm] §11 VIOLATION — tool "${name}" result contains forbidden field "${field}". ` +
-          `Stripping result before sending to Claude.`
+          `Stripping result before sending to Gemini.`
         );
         return true; // violation found
       }
@@ -76,23 +86,27 @@ export function validateToolResult(name: string, result: unknown): unknown {
   return result;
 }
 
-// ── Claude tool schemas (§7) ──────────────────────────────────────────────────
+// ── Gemini function declarations (§7) ─────────────────────────────────────────
+//
+// Gemini uses FunctionDeclaration[] inside a Tool object: { functionDeclarations }.
+// The `parameters` field follows JSON Schema (Gemini Schema type).
+// All four declarations match the same tool names used in the Anthropic version
+// so the dispatcher, tests, and character sheet references are unchanged.
 
-export const FLORA_TOOLS: Tool[] = [
+export const FLORA_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
   {
     name: 'get_weather',
     description:
-      'Get the current weather for the user\'s saved location. ' +
+      "Get the current weather for the user's saved location. " +
       'Returns temperature and a plain-English condition string, or null if unavailable.',
-    input_schema: {
-      type: 'object' as const,
+    parameters: {
+      type: 'object',
       properties: {
         location: {
           type: 'string',
           description: 'Optional location override (city name or "lat,lon"). Uses saved location if omitted.',
         },
       },
-      required: [],
     },
   },
   {
@@ -101,25 +115,24 @@ export const FLORA_TOOLS: Tool[] = [
       "Get today's calendar events for the user. " +
       'Returns an array of events with title, start time, end time, and optional location. ' +
       'Returns an empty array if there are no events or the calendar is unreachable.',
-    input_schema: {
-      type: 'object' as const,
+    parameters: {
+      type: 'object',
       properties: {
         date: {
           type: 'string',
           description: 'ISO 8601 date string (e.g. "2026-08-12"). Defaults to today if omitted.',
         },
       },
-      required: [],
     },
   },
   {
     name: 'get_notes_activity',
     description:
-      'Get recently modified files from the user\'s watched folder. ' +
+      "Get recently modified files from the user's watched folder. " +
       'Returns metadata only (filename, type category, modified time) — never file contents. ' +
       'Returns an empty array if no recent activity or the folder is inaccessible.',
-    input_schema: {
-      type: 'object' as const,
+    parameters: {
+      type: 'object',
       properties: {
         folder: {
           type: 'string',
@@ -130,7 +143,6 @@ export const FLORA_TOOLS: Tool[] = [
           description: 'How many minutes back to look for modifications. Default: 15.',
         },
       },
-      required: [],
     },
   },
   {
@@ -139,13 +151,15 @@ export const FLORA_TOOLS: Tool[] = [
       "Get the user's current Spotify playback state. " +
       'Returns track title, artist, album, and whether it is playing or paused. ' +
       'Returns null if nothing is playing, Spotify is not connected, or the API is unreachable.',
-    input_schema: {
-      type: 'object' as const,
+    parameters: {
+      type: 'object',
       properties: {},
-      required: [],
     },
   },
 ];
+
+// Convenience: the Tool object passed to Gemini's generateContent config.tools
+export const FLORA_GEMINI_TOOLS = [{ functionDeclarations: FLORA_FUNCTION_DECLARATIONS }];
 
 // ── Tool names as a typed union ───────────────────────────────────────────────
 
@@ -196,17 +210,25 @@ export function createDefaultDispatcher(integrations: {
   };
 }
 
-// ── Format tool result as a string for Claude's tool_result block ─────────────
+// ── Serialize tool result for Gemini's functionResponse part ──────────────────
 //
-// Claude's tool_result content must be a string (or array of content blocks).
-// We serialize to compact JSON, with a human-readable null/empty fallback.
+// Gemini expects functionResponse.response to be a JSON-serializable object.
+// We wrap the result in { result: ... } so nulls and arrays are valid objects.
 
-export function serializeToolResult(name: string, result: unknown): string {
+export function serializeToolResult(name: string, result: unknown): Record<string, unknown> {
   if (result === null || result === undefined) {
-    return `null (${name} returned no data — tool unavailable or no content)`;
+    return { result: null, note: `${name} returned no data — tool unavailable or no content` };
   }
   if (Array.isArray(result) && result.length === 0) {
-    return `[] (${name} returned no items)`;
+    return { result: [], note: `${name} returned no items` };
   }
-  return JSON.stringify(result);
+  return { result };
+}
+
+// ── Legacy string serializer (kept for test compatibility) ────────────────────
+// Used by reasoning.test.ts to inspect tool result content as a string.
+
+export function serializeToolResultString(name: string, result: unknown): string {
+  const obj = serializeToolResult(name, result);
+  return JSON.stringify(obj);
 }

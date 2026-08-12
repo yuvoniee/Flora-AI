@@ -1,25 +1,32 @@
 /**
- * Module E — LLM Reasoning Layer
+ * Module E — LLM Reasoning Layer (Gemini backend)
  *
- * Claude API only (§10 decision). No provider abstraction.
- * Exposes three functions:
+ * Switched from Anthropic claude-opus-4-5 to Google Gemini gemini-2.0-flash
+ * on 2026-08-12 to use the free tier. All public function signatures are
+ * unchanged: generateMorningBrief, generateProactiveMessage, chat.
  *
- *   generateMorningBrief(signals)  → string | null
- *   generateProactiveMessage(trigger, signals) → string | null
- *   chat(messages)  → string | null
+ * ⚠️  FREE-TIER PRIVACY NOTE: Gemini API free-tier requests may be used by
+ * Google to improve their models. Swap to a paid tier before handling real
+ * personal data long-term (calendar events, filenames, music history). See:
+ * https://ai.google.dev/gemini-api/terms
  *
- * §7 Error handling:
+ * §7 Error handling (unchanged from Anthropic version):
  *   - Proactive messages:  any failure → silent null (never surfaces to user)
  *   - Morning brief:       any failure → null (caller degrades gracefully)
  *   - Direct chat:         any failure → null (caller shows retry UI)
  *
- * §11 Data minimization:
+ * §11 Data minimization (unchanged):
  *   - Window activity arrives as category labels only (never raw titles)
- *   - Tool dispatcher validates results before sending to Claude (see tools.ts)
+ *   - Tool dispatcher validates results before sending to Gemini (see tools.ts)
  *   - API key is never hardcoded — always injected via config
  */
 
-import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenAI } from '@google/genai';
+import type {
+  Content,
+  Part,
+  GenerateContentResponse,
+} from '@google/genai';
 import {
   FLORA_SYSTEM_PROMPT,
   MAX_PROACTIVE_SENTENCES,
@@ -27,7 +34,7 @@ import {
   PROACTIVE_TRIGGER_LABELS,
 } from './character-sheet.js';
 import {
-  FLORA_TOOLS,
+  FLORA_GEMINI_TOOLS,
   TOOL_NAMES,
   type ToolDispatcher,
   serializeToolResult,
@@ -51,13 +58,38 @@ export interface ChatMessage {
   content: string;
 }
 
+// ── Gemini client interface (injectable for tests) ────────────────────────────
+//
+// We define a minimal interface over the parts of GoogleGenAI we actually use.
+// This lets tests inject a mock without depending on the real SDK shape.
+
+export interface GeminiGenerateResult {
+  /** Returns the first text part, or null if there is none */
+  text(): string | null;
+  /** Returns all function call parts in this response */
+  functionCalls(): Array<{ name: string; args: Record<string, unknown> }> | undefined;
+}
+
+export interface GeminiClientInterface {
+  generateContent(params: {
+    model: string;
+    contents: Content[];
+    config: {
+      systemInstruction: string;
+      tools: typeof FLORA_GEMINI_TOOLS;
+      maxOutputTokens: number;
+      abortSignal: AbortSignal;
+    };
+  }): Promise<GeminiGenerateResult>;
+}
+
 export interface ReasoningConfig {
   apiKey: string;              // from OS keychain or env — never hardcoded
-  model?: string;              // default: claude-opus-4-5
+  model?: string;              // default: gemini-2.0-flash
   timeoutMs?: number;          // default: 15000ms
   maxToolDepth?: number;       // default: 3 (prevents infinite loops)
   toolDispatcher?: ToolDispatcher;  // injectable for tests
-  _customClient?: Anthropic;   // injectable for tests
+  _customClient?: GeminiClientInterface;  // injectable for tests
 }
 
 export interface ReasoningEngine {
@@ -89,7 +121,6 @@ export function trimToSentences(text: string, max: number): string {
   const matches = [...trimmed.matchAll(sentencePattern)];
   if (matches.length <= max) return trimmed;
 
-  // Find the end index of the Nth sentence
   let endIdx = 0;
   for (let i = 0; i < max; i++) {
     if (matches[i]) {
@@ -99,97 +130,126 @@ export function trimToSentences(text: string, max: number): string {
   return trimmed.slice(0, endIdx).trim();
 }
 
-// ── Tool use loop ─────────────────────────────────────────────────────────────
+// ── Real Gemini client wrapper ────────────────────────────────────────────────
+//
+// Wraps GoogleGenAI so it matches GeminiClientInterface.
+// GenerateContentResponse.text() returns string | undefined in the SDK;
+// we normalize to string | null here.
+
+function wrapRealClient(apiKey: string): GeminiClientInterface {
+  const sdk = new GoogleGenAI({ apiKey });
+
+  return {
+    async generateContent(params) {
+      const raw: GenerateContentResponse = await sdk.models.generateContent({
+        model: params.model,
+        contents: params.contents,
+        config: {
+          systemInstruction: params.config.systemInstruction,
+          tools: params.config.tools as any,
+          maxOutputTokens: params.config.maxOutputTokens,
+          abortSignal: params.config.abortSignal,
+        },
+      });
+
+      return {
+        text: () => raw.text ?? null,
+        functionCalls: () => {
+          const calls = raw.functionCalls();
+          if (!calls || calls.length === 0) return undefined;
+          return calls.map(c => ({
+            name: c.name ?? '',
+            args: (c.args ?? {}) as Record<string, unknown>,
+          }));
+        },
+      };
+    },
+  };
+}
+
+// ── Tool use loop (Gemini) ────────────────────────────────────────────────────
+//
+// Gemini function-calling conversation format:
+//   Turn 1 (user):  { role: 'user', parts: [{ text: '...' }] }
+//   Turn 2 (model): { role: 'model', parts: [{ functionCall: { name, args } }] }
+//   Turn 3 (user):  { role: 'user', parts: [{ functionResponse: { name, response } }] }
+//   Turn 4 (model): { role: 'model', parts: [{ text: '...' }] }  ← final answer
 
 async function runToolLoop(
-  client: Anthropic,
+  client: GeminiClientInterface,
   model: string,
   systemPrompt: string,
-  messages: Anthropic.MessageParam[],
-  tools: Anthropic.Tool[],
+  initialContents: Content[],
   dispatcher: ToolDispatcher,
   maxDepth: number,
   timeoutMs: number,
 ): Promise<string | null> {
   let depth = 0;
-  let currentMessages = [...messages];
+  const contents: Content[] = [...initialContents];
 
   while (depth < maxDepth) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    let response: Anthropic.Message;
+    let response: GeminiGenerateResult;
     try {
-      response = await client.messages.create(
-        {
-          model,
-          max_tokens: 1024,
-          system: systemPrompt,
-          tools,
-          messages: currentMessages,
+      response = await client.generateContent({
+        model,
+        contents,
+        config: {
+          systemInstruction: systemPrompt,
+          tools: FLORA_GEMINI_TOOLS,
+          maxOutputTokens: 1024,
+          abortSignal: controller.signal,
         },
-        { signal: controller.signal as any },
-      );
+      });
     } finally {
       clearTimeout(timer);
     }
 
-    // Extract text from stop_reason = 'end_turn'
-    if (response.stop_reason === 'end_turn') {
-      const textBlock = response.content.find(b => b.type === 'text');
-      return textBlock && textBlock.type === 'text' ? textBlock.text : null;
+    const functionCalls = response.functionCalls();
+
+    // No function calls → we have a final text response
+    if (!functionCalls || functionCalls.length === 0) {
+      return response.text();
     }
 
-    // Handle tool_use
-    if (response.stop_reason === 'tool_use') {
-      const toolUseBlocks = response.content.filter(b => b.type === 'tool_use');
+    // Append the model's function-call turn to history
+    const modelParts: Part[] = functionCalls.map(fc => ({
+      functionCall: { name: fc.name, args: fc.args },
+    }));
+    contents.push({ role: 'model', parts: modelParts });
 
-      if (toolUseBlocks.length === 0) {
-        const textBlock = response.content.find(b => b.type === 'text');
-        return textBlock && textBlock.type === 'text' ? textBlock.text : null;
-      }
+    // Resolve each function call and build the user response turn
+    const responseParts: Part[] = [];
+    for (const fc of functionCalls) {
+      const toolName = fc.name;
+      const toolArgs = fc.args;
 
-      // Add assistant message with tool_use blocks
-      currentMessages.push({ role: 'assistant', content: response.content });
-
-      // Resolve each tool call
-      const toolResults: Anthropic.ToolResultBlockParam[] = [];
-      for (const block of toolUseBlocks) {
-        if (block.type !== 'tool_use') continue;
-
-        const toolName = block.name;
-        const toolInput = block.input as Record<string, unknown>;
-
-        let toolContent: string;
-        if (TOOL_NAMES.has(toolName)) {
-          try {
-            const result = await dispatcher(toolName, toolInput);
-            toolContent = serializeToolResult(toolName, result);
-          } catch (err: any) {
-            console.warn(`[Flora/llm] Tool "${toolName}" threw: ${err?.message}`);
-            toolContent = serializeToolResult(toolName, null);
-          }
-        } else {
-          console.warn(`[Flora/llm] Unrecognized tool call: "${toolName}"`);
-          toolContent = serializeToolResult(toolName, null);
+      let toolResult: unknown;
+      if (TOOL_NAMES.has(toolName)) {
+        try {
+          toolResult = await dispatcher(toolName, toolArgs);
+        } catch (err: any) {
+          console.warn(`[Flora/llm] Tool "${toolName}" threw: ${err?.message}`);
+          toolResult = null;
         }
-
-        toolResults.push({
-          type: 'tool_result',
-          tool_use_id: block.id,
-          content: toolContent,
-        });
+      } else {
+        console.warn(`[Flora/llm] Unrecognized tool call: "${toolName}"`);
+        toolResult = null;
       }
 
-      // Add tool results as a user message
-      currentMessages.push({ role: 'user', content: toolResults });
-      depth++;
-      continue;
+      responseParts.push({
+        functionResponse: {
+          name: toolName,
+          response: serializeToolResult(toolName, toolResult),
+        },
+      });
     }
 
-    // Unexpected stop reason
-    console.warn(`[Flora/llm] Unexpected stop_reason: ${response.stop_reason}`);
-    return null;
+    // Append the tool-result turn as 'user' (Gemini convention)
+    contents.push({ role: 'user', parts: responseParts });
+    depth++;
   }
 
   console.warn(`[Flora/llm] Tool call depth limit (${maxDepth}) reached — aborting`);
@@ -199,13 +259,14 @@ async function runToolLoop(
 // ── Factory ───────────────────────────────────────────────────────────────────
 
 export function createReasoningEngine(config: ReasoningConfig): ReasoningEngine {
-  const model = config.model ?? 'claude-opus-4-5';
+  const model = config.model ?? 'gemini-2.0-flash';
   const timeoutMs = config.timeoutMs ?? 15_000;
   const maxToolDepth = config.maxToolDepth ?? 3;
 
-  const client: Anthropic = config._customClient ?? new Anthropic({ apiKey: config.apiKey });
+  const client: GeminiClientInterface =
+    config._customClient ?? wrapRealClient(config.apiKey);
 
-  // Default dispatcher is a no-op that returns null for every tool.
+  // Default dispatcher returns null for every tool.
   // In production, createDefaultDispatcher() from tools.ts is passed in.
   // In tests, a mock dispatcher is injected.
   const dispatcher: ToolDispatcher = config.toolDispatcher ?? (async () => null);
@@ -214,18 +275,19 @@ export function createReasoningEngine(config: ReasoningConfig): ReasoningEngine 
 
   async function generateMorningBrief(signals: SignalContext = {}): Promise<string | null> {
     const signalDescription = formatSignalContext(signals);
-    const userMessage =
+    const userText =
       `Please give me my morning brief. ` +
       `Use your tools to fetch current weather, calendar events, recent file activity, ` +
       `and now-playing status. ` +
       (signalDescription ? `Context: ${signalDescription}. ` : '') +
       `Keep it under 120 words, plain prose, no bullet points.`;
 
+    const contents: Content[] = [{ role: 'user', parts: [{ text: userText }] }];
+
     try {
       return await runToolLoop(
         client, model, FLORA_SYSTEM_PROMPT,
-        [{ role: 'user', content: userMessage }],
-        FLORA_TOOLS, dispatcher, maxToolDepth, timeoutMs,
+        contents, dispatcher, maxToolDepth, timeoutMs,
       );
     } catch (err: any) {
       console.warn(`[Flora/llm] generateMorningBrief failed: ${err?.message}`);
@@ -242,23 +304,24 @@ export function createReasoningEngine(config: ReasoningConfig): ReasoningEngine 
     const triggerLabel = PROACTIVE_TRIGGER_LABELS[trigger];
     const signalDescription = formatSignalContext(signals);
 
-    const userMessage =
+    const userText =
       `Trigger: ${triggerLabel}. ` +
       (signalDescription ? `Context: ${signalDescription}. ` : '') +
       `Write a proactive message for this situation. ` +
       `Maximum 2 sentences. No opener like "Hey" or "Just so you know". ` +
       `No follow-up questions. End with a period.`;
 
+    const contents: Content[] = [{ role: 'user', parts: [{ text: userText }] }];
+
     try {
       const raw = await runToolLoop(
         client, model, FLORA_SYSTEM_PROMPT,
-        [{ role: 'user', content: userMessage }],
-        FLORA_TOOLS, dispatcher, maxToolDepth, timeoutMs,
+        contents, dispatcher, maxToolDepth, timeoutMs,
       );
 
       if (!raw) return null;
 
-      // §7 enforcement: trim to MAX_PROACTIVE_SENTENCES regardless of what Claude returned
+      // §7 enforcement: trim to MAX_PROACTIVE_SENTENCES regardless of what Gemini returned
       const count = countSentences(raw);
       if (count > MAX_PROACTIVE_SENTENCES) {
         console.warn(
@@ -279,15 +342,17 @@ export function createReasoningEngine(config: ReasoningConfig): ReasoningEngine 
   // ── chat ─────────────────────────────────────────────────────────────────
 
   async function chat(messages: ChatMessage[]): Promise<string | null> {
-    const apiMessages: Anthropic.MessageParam[] = messages.map(m => ({
-      role: m.role,
-      content: m.content,
+    // Map ChatMessage[] → Gemini Content[]
+    // 'assistant' role maps to 'model' in Gemini's convention
+    const contents: Content[] = messages.map(m => ({
+      role: m.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: m.content }],
     }));
 
     try {
       return await runToolLoop(
         client, model, FLORA_SYSTEM_PROMPT,
-        apiMessages, FLORA_TOOLS, dispatcher, maxToolDepth, timeoutMs,
+        contents, dispatcher, maxToolDepth, timeoutMs,
       );
     } catch (err: any) {
       console.warn(`[Flora/llm] chat failed: ${err?.message}`);
