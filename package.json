@@ -11,8 +11,12 @@
     "test:watch": "vitest",
     "test:weather": "vitest run src/weather.test.ts",
     "test:calendar": "vitest run src/calendar.test.ts",
+    "test:files": "vitest run src/files.test.ts",
+    "test:spotify": "vitest run src/spotify.test.ts",
     "weather:cli": "tsx src/weather.cli.ts",
     "calendar:cli": "tsx src/calendar.cli.ts",
+    "files:cli": "tsx src/files.cli.ts",
+    "spotify:cli": "tsx src/spotify.cli.ts",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -22,6 +26,7 @@
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
+    "tsx": "^4.23.12",
     "typescript": "~5.6.2",
     "vite": "^6.0.3",
     "vitest": "^4.1.10"
