@@ -13,13 +13,18 @@
     "test:calendar": "vitest run src/calendar.test.ts",
     "test:files": "vitest run src/files.test.ts",
     "test:spotify": "vitest run src/spotify.test.ts",
+    "test:llm": "vitest run src/llm/reasoning.test.ts",
     "weather:cli": "tsx src/weather.cli.ts",
     "calendar:cli": "tsx src/calendar.cli.ts",
     "files:cli": "tsx src/files.cli.ts",
     "spotify:cli": "tsx src/spotify.cli.ts",
+    "llm:sheet": "tsx src/llm/reasoning.cli.ts --print-sheet",
+    "llm:brief": "tsx src/llm/reasoning.cli.ts --brief",
+    "llm:review": "tsx src/llm/reasoning.cli.ts --review-sheet",
     "tauri": "tauri"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "keytar": "^7.9.0"
