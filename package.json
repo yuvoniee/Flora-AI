@@ -10,12 +10,15 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:weather": "vitest run src/weather.test.ts",
+    "test:calendar": "vitest run src/calendar.test.ts",
     "weather:cli": "tsx src/weather.cli.ts",
+    "calendar:cli": "tsx src/calendar.cli.ts",
     "tauri": "tauri"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2"
+    "@tauri-apps/plugin-opener": "^2",
+    "keytar": "^7.9.0"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2",
