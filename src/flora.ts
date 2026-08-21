@@ -10,10 +10,14 @@
  *   - Drives §13.4 offline behavior: stale brief label, chat disabled, no LLM calls
  *   - Shows §13.2 "confused" state (3 s flash) on integration failure
  *   - Never owns UI state directly — delegates to AvatarRenderer and ChatPanel
+ *
+ * LLM: uses local Ollama — no API key needed.
  */
 
 import { createReasoningEngine, type ReasoningEngine, type SignalContext } from './llm/reasoning.js';
 import { createDefaultDispatcher } from './llm/tools.js';
+import { getWeather } from './weather.js';
+import { getTodayEvents } from './calendar.js';
 import { SignalCoordinator } from './signals.js';
 import { NetworkMonitor } from './network.js';
 import { FloraStateMachine } from './states.js';
@@ -34,7 +38,7 @@ export class FloraCoordinator {
   private chatPanel: ChatPanel;
   private signals: SignalCoordinator;
   private network: NetworkMonitor;
-  private engine: ReasoningEngine | null = null;
+  private engine: ReasoningEngine;
   private isOffline = false;
   private staleBriefText: string | null = null;
   private staleBriefTime: Date | null = null;
@@ -44,14 +48,18 @@ export class FloraCoordinator {
     this.renderer = renderer;
     this.chatPanel = chatPanel;
 
-    // Build the reasoning engine if a key was provided
-    if (onboarding.geminiApiKey) {
-      this.engine = createReasoningEngine({
-        apiKey: onboarding.geminiApiKey,
-        toolDispatcher: createDefaultDispatcher({}),  // real integrations injected later
-      });
-      chatPanel.setEngine(this.engine);
-    }
+    // Build the reasoning engine — Ollama is local, no key needed
+    // Wire real Module D integrations into the tool dispatcher
+    const savedCity = onboarding.location ?? null;
+
+    this.engine = createReasoningEngine({
+      toolDispatcher: createDefaultDispatcher({
+        getWeather: () => getWeather(savedCity ? { city: savedCity } : {}),
+        getTodayEvents: () => getTodayEvents(),
+        // TODO: wire getRecentFiles, getNowPlaying once live
+      }),
+    });
+    this.chatPanel.setEngine(this.engine);
 
     // Network monitor
     this.network = new NetworkMonitor();
@@ -68,6 +76,18 @@ export class FloraCoordinator {
     // Chat panel thinking callbacks → sm triggers
     chatPanel.onThinkingStart = () => { sm.trigger('llm_request_start'); };
     chatPanel.onThinkingEnd = () => { sm.trigger('llm_request_end'); };
+
+    // Settings: rebuild dispatcher when the user updates their weather location
+    chatPanel.onLocationUpdated = (city: string) => {
+      this.engine = createReasoningEngine({
+        toolDispatcher: createDefaultDispatcher({
+          getWeather: () => getWeather({ city }),
+          getTodayEvents: () => getTodayEvents(),
+        }),
+      });
+      this.chatPanel.setEngine(this.engine);
+      console.log(`[Flora] Weather location updated to "${city}" — engine rebuilt`);
+    };
   }
 
   /** Start the coordinator — call after all DOM is ready */
@@ -93,20 +113,18 @@ export class FloraCoordinator {
       return;
     }
 
-    if (!this.engine) {
-      // No LLM — show a minimal "no key" message
-      this.renderer.setBriefText(
-        'Add a Gemini API key in settings to get your morning brief.',
-        false,
-      );
-      this.renderer.showBrief(true);
-      return;
-    }
+    // Generate the morning brief in the background while the greeting
+    // animation plays (leaves wave, eyes wide per §3). We do NOT transition
+    // to 'thinking' here — the greeting state should remain visible.
+    // 'thinking' is reserved for chat interactions only.
+    //
+    // Minimum 3 s greeting display — ensures the animation is always
+    // visible, even if the LLM responds instantly.
+    const MIN_GREETING_MS = 3000;
+    const greetingStart = Date.now();
 
-    this.sm.trigger('llm_request_start');
     try {
       const brief = await this.engine.generateMorningBrief(signals ?? {});
-      this.sm.trigger('llm_request_end');
 
       if (brief) {
         this.staleBriefText = brief;
@@ -116,9 +134,17 @@ export class FloraCoordinator {
       }
       // null → degraded, no error shown (§13.2 "quiet degraded" — brief still absent, no error)
     } catch {
-      this.sm.trigger('llm_request_end');
       // Silent degradation — same as null result
     }
+
+    // Wait for the remaining minimum greeting display time before
+    // transitioning back to idle, so the user always sees the animation.
+    const elapsed = Date.now() - greetingStart;
+    if (elapsed < MIN_GREETING_MS) {
+      await new Promise(resolve => setTimeout(resolve, MIN_GREETING_MS - elapsed));
+    }
+
+    this.sm.trigger('greeting_done');
   }
 
   // ── §13.2 confused state ──────────────────────────────────────────────────
@@ -162,7 +188,7 @@ export class FloraCoordinator {
   // ── Proactive messages (Module E wiring) ─────────────────────────────────
 
   private async handleProactiveMessage(trigger: string, signalCtx: SignalContext): Promise<void> {
-    if (this.isOffline || !this.engine) return; // §13.4: no LLM calls when offline
+    if (this.isOffline) return; // §13.4: no LLM calls when offline
 
     try {
       const msg = await this.engine.generateProactiveMessage(

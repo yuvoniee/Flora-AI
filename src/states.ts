@@ -49,8 +49,6 @@ export const STATES: Record<string, StateConfig> = {
     label: 'Greeting',
     jarClass: 'is-greeting',
     color: 'var(--c-greeting)',
-    duration: 3000,
-    nextState: 'idle',
   },
   focused: {
     label: 'Focused',
@@ -61,8 +59,6 @@ export const STATES: Record<string, StateConfig> = {
     label: 'Celebrating',
     jarClass: 'is-celebrating',
     color: 'var(--c-celebrating)',
-    duration: 4000,
-    nextState: 'idle',
   },
   sleepy: {
     label: 'Sleepy',
@@ -112,10 +108,15 @@ export const TRANSITIONS: Transition[] = [
   { from: 'greeting',    trigger: 'integration_error', to: 'confused'    },
 ];
 
+/** Source of a state change — lets listeners distinguish side-effect-free debug
+ *  changes from production triggers and auto-transitions. */
+export type StateChangeSource = 'debug' | 'trigger' | 'auto';
+
 export type StateChangeListener = (
   stateName: string,
   config: StateConfig,
   previousState: string,
+  source: StateChangeSource,
 ) => void;
 
 /**
@@ -140,14 +141,20 @@ export class FloraStateMachine {
     return STATES[this.current];
   }
 
-  /** Direct set — used by debug panel, bypasses transition table */
-  setState(stateName: string): void {
-    if (!STATES[stateName] || stateName === this.current) return;
-    const prev = this.current;
-    this.clearAutoTimer();
-    this.current = stateName;
-    this.notify(prev);
-    this.scheduleAutoTransition();
+  /**
+   * Direct set — used by debug panel. Bypasses transition table.
+   * Listeners receive source='debug' so they can skip side effects.
+   */
+  setDebugState(stateName: string): void {
+    this.applyState(stateName, 'debug');
+  }
+
+  /**
+   * Production state set — used internally by trigger() and auto-transitions.
+   * Listeners receive the real source ('trigger' or 'auto').
+   */
+  setState(stateName: string, source: StateChangeSource = 'trigger'): void {
+    this.applyState(stateName, source);
   }
 
   /** Trigger-based transition — table decides next state */
@@ -158,7 +165,7 @@ export class FloraStateMachine {
         t.trigger === triggerName,
     );
     if (!match) return false;
-    this.setState(match.to);
+    this.setState(match.to, 'trigger');
     return true;
   }
 
@@ -166,9 +173,18 @@ export class FloraStateMachine {
     this.listeners.push(listener);
   }
 
-  private notify(prev: string): void {
+  private applyState(stateName: string, source: StateChangeSource): void {
+    if (!STATES[stateName] || stateName === this.current) return;
+    const prev = this.current;
+    this.clearAutoTimer();
+    this.current = stateName;
+    this.notify(prev, source);
+    this.scheduleAutoTransition();
+  }
+
+  private notify(prev: string, source: StateChangeSource): void {
     const config = STATES[this.current];
-    for (const fn of this.listeners) fn(this.current, config, prev);
+    for (const fn of this.listeners) fn(this.current, config, prev, source);
   }
 
   private scheduleAutoTransition(): void {
@@ -176,7 +192,7 @@ export class FloraStateMachine {
     if (config.duration && config.nextState && STATES[config.nextState]) {
       this.autoTimer = setTimeout(() => {
         this.autoTimer = null;
-        this.setState(config.nextState!);
+        this.applyState(config.nextState!, 'auto');
       }, config.duration);
     }
   }

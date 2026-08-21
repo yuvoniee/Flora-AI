@@ -11,6 +11,8 @@
  * §13.4: NetworkMonitor wired through FloraCoordinator
  * §13.2: confused + offline states handled by FloraCoordinator
  * §7:    all LLM failures are silent or show retry — never raw errors
+ *
+ * LLM: uses local Ollama — no API key needed.
  */
 
 import { FloraStateMachine, STATES } from './states.js';
@@ -29,7 +31,7 @@ function buildDebugPanel(container: HTMLElement, sm: FloraStateMachine): void {
     btn.textContent = STATES[key].label;
     btn.dataset.state = key;
     if (key === sm.getState()) btn.classList.add('active');
-    btn.addEventListener('click', () => sm.setState(key));
+    btn.addEventListener('click', () => sm.setDebugState(key));
     container.appendChild(btn);
   }
   sm.onStateChange((stateName) => {
@@ -70,11 +72,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   const sm = new FloraStateMachine('idle');
   const renderer = new AvatarRenderer(jar, stateName, brief, toast, proactive);
 
-  sm.onStateChange((name, config) => {
+  sm.onStateChange((name, config, _prev, source) => {
     renderer.update(name, config);
 
-    // On greeting entry: request a morning brief (handled by coordinator)
-    if (name === 'greeting' && coordinator) {
+    // On greeting entry from a REAL trigger (not debug): request a morning brief
+    if (name === 'greeting' && source !== 'debug' && coordinator) {
       const timeOfDay = getTimeOfDay();
       coordinator.onGreeting({ timeOfDay });
     }
@@ -124,11 +126,9 @@ window.addEventListener('DOMContentLoaded', async () => {
   };
 
   if (OnboardingFlow.isComplete()) {
-    // Return visit — restore API key from session if available
-    const savedKey = OnboardingFlow.getSessionApiKey();
+    // Return visit — restore saved preferences
     const savedLocation = localStorage.getItem('flora.location') ?? null;
     startApp({
-      geminiApiKey: savedKey,
       location: savedLocation,
       calendarEnabled: true,
     });

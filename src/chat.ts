@@ -20,6 +20,10 @@ export class ChatPanel {
   private sendBtn: HTMLButtonElement;
   private closeBtn: HTMLButtonElement;
   private offlineBannerEl: HTMLElement;
+  private settingsToggleBtn: HTMLButtonElement;
+  private settingsEl: HTMLElement;
+  private locationInput: HTMLInputElement;
+  private locationSaveBtn: HTMLButtonElement;
   private engine: ReasoningEngine | null = null;
   private history: ChatMessage[] = [];
   private isOffline = false;
@@ -29,6 +33,8 @@ export class ChatPanel {
   onThinkingStart?: () => void;
   /** Callback fired when a chat request ends */
   onThinkingEnd?: () => void;
+  /** Callback fired when the user updates their weather location */
+  onLocationUpdated?: (city: string) => void;
 
   constructor(panelEl: HTMLElement) {
     this.el = panelEl;
@@ -38,6 +44,12 @@ export class ChatPanel {
     this.closeBtn = panelEl.querySelector('#chat-close')!;
     this.offlineBannerEl = panelEl.querySelector('#chat-offline-banner')!;
 
+    // Settings panel elements
+    this.settingsToggleBtn = panelEl.querySelector('#chat-settings-toggle')!;
+    this.settingsEl = panelEl.querySelector('#chat-settings')!;
+    this.locationInput = panelEl.querySelector('#settings-location')!;
+    this.locationSaveBtn = panelEl.querySelector('#settings-location-save')!;
+
     this.sendBtn.addEventListener('click', () => this.send());
     this.inputEl.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' && !e.shiftKey) {
@@ -46,6 +58,29 @@ export class ChatPanel {
       }
     });
     this.closeBtn.addEventListener('click', () => this.close());
+
+    // Settings toggle
+    this.settingsToggleBtn.addEventListener('click', () => {
+      const hidden = this.settingsEl.hidden;
+      this.settingsEl.hidden = !hidden;
+      // Pre-fill with current saved location
+      if (!hidden === false) {
+        // Opening — load current value
+      }
+      const saved = localStorage.getItem('flora.location') ?? '';
+      this.locationInput.value = saved;
+    });
+
+    // Save location
+    this.locationSaveBtn.addEventListener('click', () => {
+      const city = this.locationInput.value.trim();
+      if (city) {
+        localStorage.setItem('flora.location', city);
+        this.onLocationUpdated?.(city);
+        this.settingsEl.hidden = true;
+        this.addMessage('flora', `Weather location updated to "${city}". I'll use it in your next brief!`);
+      }
+    });
   }
 
   /** Inject the reasoning engine (called after onboarding completes) */
@@ -89,7 +124,7 @@ export class ChatPanel {
     this.history.push({ role: 'user', content: text });
 
     if (!this.engine) {
-      this.addMessage('flora', "I'm not fully set up yet — add a Gemini API key in settings to chat.");
+      this.addMessage('flora', 'Local AI not running — start Ollama and try again.');
       return;
     }
 

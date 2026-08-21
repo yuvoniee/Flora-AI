@@ -1,32 +1,24 @@
 /**
- * Module E — LLM Reasoning Layer (Gemini backend)
+ * Module E — LLM Reasoning Layer (Ollama backend)
  *
- * Switched from Anthropic claude-opus-4-5 to Google Gemini gemini-2.0-flash
- * on 2026-08-12 to use the free tier. All public function signatures are
- * unchanged: generateMorningBrief, generateProactiveMessage, chat.
+ * Switched to local Ollama server on 2026-08-20. All inference runs on-device
+ * via http://localhost:11434 — no cloud API, no API key, no privacy trade-off.
  *
- * ⚠️  FREE-TIER PRIVACY NOTE: Gemini API free-tier requests may be used by
- * Google to improve their models. Swap to a paid tier before handling real
- * personal data long-term (calendar events, filenames, music history). See:
- * https://ai.google.dev/gemini-api/terms
+ * All public function signatures are unchanged from prior versions:
+ * versions: generateMorningBrief, generateProactiveMessage, chat.
  *
- * §7 Error handling (unchanged from Anthropic version):
+ * §7 Error handling:
  *   - Proactive messages:  any failure → silent null (never surfaces to user)
  *   - Morning brief:       any failure → null (caller degrades gracefully)
  *   - Direct chat:         any failure → null (caller shows retry UI)
+ *   - Ollama not running:  clear message "Local AI not running — start Ollama
+ *                          and try again" (not a generic error)
  *
  * §11 Data minimization (unchanged):
  *   - Window activity arrives as category labels only (never raw titles)
- *   - Tool dispatcher validates results before sending to Gemini (see tools.ts)
- *   - API key is never hardcoded — always injected via config
+ *   - Tool dispatcher validates results before sending to the LLM (see tools.ts)
  */
 
-import { GoogleGenAI } from '@google/genai';
-import type {
-  Content,
-  Part,
-  GenerateContentResponse,
-} from '@google/genai';
 import {
   FLORA_SYSTEM_PROMPT,
   MAX_PROACTIVE_SENTENCES,
@@ -34,11 +26,19 @@ import {
   PROACTIVE_TRIGGER_LABELS,
 } from './character-sheet.js';
 import {
-  FLORA_GEMINI_TOOLS,
+  FLORA_TOOLS,
   TOOL_NAMES,
   type ToolDispatcher,
   serializeToolResult,
 } from './tools.js';
+
+// ── Constants (single source of truth for model name) ─────────────────────────
+
+/** The Ollama model to use. Change this one line to switch models. */
+export const OLLAMA_MODEL = 'llama3.2';
+
+/** Base URL for the local Ollama server. */
+export const OLLAMA_BASE_URL = 'http://localhost:11434';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -58,38 +58,43 @@ export interface ChatMessage {
   content: string;
 }
 
-// ── Gemini client interface (injectable for tests) ────────────────────────────
-//
-// We define a minimal interface over the parts of GoogleGenAI we actually use.
-// This lets tests inject a mock without depending on the real SDK shape.
+// ── Ollama message types ──────────────────────────────────────────────────────
 
-export interface GeminiGenerateResult {
-  /** Returns the first text part, or null if there is none */
-  text(): string | null;
-  /** Returns all function call parts in this response */
-  functionCalls(): Array<{ name: string; args: Record<string, unknown> }> | undefined;
+export interface OllamaMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_calls?: OllamaToolCall[];
 }
 
-export interface GeminiClientInterface {
-  generateContent(params: {
+export interface OllamaToolCall {
+  function: {
+    name: string;
+    arguments: Record<string, unknown>;
+  };
+}
+
+export interface OllamaChatResult {
+  message: OllamaMessage;
+}
+
+// ── Ollama client interface (injectable for tests) ────────────────────────────
+
+export interface OllamaClientInterface {
+  chat(params: {
     model: string;
-    contents: Content[];
-    config: {
-      systemInstruction: string;
-      tools: typeof FLORA_GEMINI_TOOLS;
-      maxOutputTokens: number;
-      abortSignal: AbortSignal;
-    };
-  }): Promise<GeminiGenerateResult>;
+    messages: OllamaMessage[];
+    tools?: typeof FLORA_TOOLS;
+    stream: false;
+  }): Promise<OllamaChatResult>;
 }
 
 export interface ReasoningConfig {
-  apiKey: string;              // from OS keychain or env — never hardcoded
-  model?: string;              // default: gemini-2.0-flash
-  timeoutMs?: number;          // default: 15000ms
+  ollamaUrl?: string;          // default: http://localhost:11434
+  model?: string;              // default: OLLAMA_MODEL ('llama3.2')
+  timeoutMs?: number;          // default: 30000ms (local models can be slower)
   maxToolDepth?: number;       // default: 3 (prevents infinite loops)
   toolDispatcher?: ToolDispatcher;  // injectable for tests
-  _customClient?: GeminiClientInterface;  // injectable for tests
+  _customClient?: OllamaClientInterface;  // injectable for tests
 }
 
 export interface ReasoningEngine {
@@ -130,102 +135,103 @@ export function trimToSentences(text: string, max: number): string {
   return trimmed.slice(0, endIdx).trim();
 }
 
-// ── Real Gemini client wrapper ────────────────────────────────────────────────
+// ── Real Ollama client wrapper ────────────────────────────────────────────────
 //
-// Wraps GoogleGenAI so it matches GeminiClientInterface.
-// GenerateContentResponse.text() returns string | undefined in the SDK;
-// we normalize to string | null here.
+// Calls POST /api/chat on the local Ollama server.
+// Response shape: { message: { role, content, tool_calls? } }
 
-function wrapRealClient(apiKey: string): GeminiClientInterface {
-  const sdk = new GoogleGenAI({ apiKey });
-
+function wrapOllamaClient(baseUrl: string, timeoutMs: number): OllamaClientInterface {
   return {
-    async generateContent(params) {
-      const raw: GenerateContentResponse = await sdk.models.generateContent({
-        model: params.model,
-        contents: params.contents,
-        config: {
-          systemInstruction: params.config.systemInstruction,
-          tools: params.config.tools as any,
-          maxOutputTokens: params.config.maxOutputTokens,
-          abortSignal: params.config.abortSignal,
-        },
-      });
+    async chat(params) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-      return {
-        text: () => raw.text ?? null,
-        functionCalls: () => {
-          // raw.functionCalls is a getter property, not a method
-          const calls = raw.functionCalls;
-          if (!calls || calls.length === 0) return undefined;
-          return calls.map((c: { name?: string; args?: Record<string, unknown> }) => ({
-            name: c.name ?? '',
-            args: (c.args ?? {}) as Record<string, unknown>,
-          }));
-        },
-      };
+      try {
+        const res = await fetch(`${baseUrl}/api/chat`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: params.model,
+            messages: params.messages,
+            tools: params.tools,
+            stream: false,
+          }),
+          signal: controller.signal,
+        });
+
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          throw new Error(`Ollama returned HTTP ${res.status}: ${text}`);
+        }
+
+        const data = await res.json();
+        return data as OllamaChatResult;
+      } catch (err: any) {
+        // Detect connection refused → Ollama not running
+        if (
+          err?.cause?.code === 'ECONNREFUSED' ||
+          err?.message?.includes('ECONNREFUSED') ||
+          err?.message?.includes('fetch failed') ||
+          err?.message?.includes('Failed to fetch')
+        ) {
+          console.error(
+            '[Flora/llm] Local AI not running — start Ollama and try again. ' +
+            `Expected server at ${baseUrl}`
+          );
+        }
+        throw err;
+      } finally {
+        clearTimeout(timer);
+      }
     },
   };
 }
 
-// ── Tool use loop (Gemini) ────────────────────────────────────────────────────
+// ── Tool use loop (Ollama) ────────────────────────────────────────────────────
 //
-// Gemini function-calling conversation format:
-//   Turn 1 (user):  { role: 'user', parts: [{ text: '...' }] }
-//   Turn 2 (model): { role: 'model', parts: [{ functionCall: { name, args } }] }
-//   Turn 3 (user):  { role: 'user', parts: [{ functionResponse: { name, response } }] }
-//   Turn 4 (model): { role: 'model', parts: [{ text: '...' }] }  ← final answer
+// Ollama tool-calling conversation format (OpenAI-compatible):
+//   Message 1 (system):    { role: 'system', content: '...' }
+//   Message 2 (user):      { role: 'user', content: '...' }
+//   Message 3 (assistant): { role: 'assistant', tool_calls: [{ function: { name, arguments } }] }
+//   Message 4 (tool):      { role: 'tool', content: '{"result": ...}' }
+//   Message 5 (assistant): { role: 'assistant', content: '...' }  ← final answer
 
 async function runToolLoop(
-  client: GeminiClientInterface,
+  client: OllamaClientInterface,
   model: string,
   systemPrompt: string,
-  initialContents: Content[],
+  initialMessages: OllamaMessage[],
   dispatcher: ToolDispatcher,
   maxDepth: number,
-  timeoutMs: number,
 ): Promise<string | null> {
   let depth = 0;
-  const contents: Content[] = [...initialContents];
+  const messages: OllamaMessage[] = [
+    { role: 'system', content: systemPrompt },
+    ...initialMessages,
+  ];
 
   while (depth < maxDepth) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const response = await client.chat({
+      model,
+      messages,
+      tools: FLORA_TOOLS,
+      stream: false,
+    });
 
-    let response: GeminiGenerateResult;
-    try {
-      response = await client.generateContent({
-        model,
-        contents,
-        config: {
-          systemInstruction: systemPrompt,
-          tools: FLORA_GEMINI_TOOLS,
-          maxOutputTokens: 1024,
-          abortSignal: controller.signal,
-        },
-      });
-    } finally {
-      clearTimeout(timer);
+    const toolCalls = response.message.tool_calls;
+
+    // No tool calls → we have a final text response
+    if (!toolCalls || toolCalls.length === 0) {
+      return response.message.content || null;
     }
 
-    const functionCalls = response.functionCalls();
+    // Append the assistant's tool-call message to history
+    messages.push(response.message);
 
-    // No function calls → we have a final text response
-    if (!functionCalls || functionCalls.length === 0) {
-      return response.text();
-    }
-
-    // Append the model's function-call turn to history
-    const modelParts: Part[] = functionCalls.map(fc => ({
-      functionCall: { name: fc.name, args: fc.args },
-    }));
-    contents.push({ role: 'model', parts: modelParts });
-
-    // Resolve each function call and build the user response turn
-    const responseParts: Part[] = [];
-    for (const fc of functionCalls) {
-      const toolName = fc.name;
-      const toolArgs = fc.args;
+    // Resolve each tool call and append tool-result messages
+    for (const tc of toolCalls) {
+      const toolName = tc.function.name;
+      const toolArgs = tc.function.arguments ?? {};
 
       let toolResult: unknown;
       if (TOOL_NAMES.has(toolName)) {
@@ -240,16 +246,12 @@ async function runToolLoop(
         toolResult = null;
       }
 
-      responseParts.push({
-        functionResponse: {
-          name: toolName,
-          response: serializeToolResult(toolName, toolResult),
-        },
+      messages.push({
+        role: 'tool',
+        content: JSON.stringify(serializeToolResult(toolName, toolResult)),
       });
     }
 
-    // Append the tool-result turn as 'user' (Gemini convention)
-    contents.push({ role: 'user', parts: responseParts });
     depth++;
   }
 
@@ -259,13 +261,14 @@ async function runToolLoop(
 
 // ── Factory ───────────────────────────────────────────────────────────────────
 
-export function createReasoningEngine(config: ReasoningConfig): ReasoningEngine {
-  const model = config.model ?? 'gemini-2.0-flash';
-  const timeoutMs = config.timeoutMs ?? 15_000;
+export function createReasoningEngine(config: ReasoningConfig = {}): ReasoningEngine {
+  const model = config.model ?? OLLAMA_MODEL;
+  const timeoutMs = config.timeoutMs ?? 30_000;
   const maxToolDepth = config.maxToolDepth ?? 3;
+  const baseUrl = config.ollamaUrl ?? OLLAMA_BASE_URL;
 
-  const client: GeminiClientInterface =
-    config._customClient ?? wrapRealClient(config.apiKey);
+  const client: OllamaClientInterface =
+    config._customClient ?? wrapOllamaClient(baseUrl, timeoutMs);
 
   // Default dispatcher returns null for every tool.
   // In production, createDefaultDispatcher() from tools.ts is passed in.
@@ -283,12 +286,12 @@ export function createReasoningEngine(config: ReasoningConfig): ReasoningEngine 
       (signalDescription ? `Context: ${signalDescription}. ` : '') +
       `Keep it under 120 words, plain prose, no bullet points.`;
 
-    const contents: Content[] = [{ role: 'user', parts: [{ text: userText }] }];
+    const messages: OllamaMessage[] = [{ role: 'user', content: userText }];
 
     try {
       return await runToolLoop(
         client, model, FLORA_SYSTEM_PROMPT,
-        contents, dispatcher, maxToolDepth, timeoutMs,
+        messages, dispatcher, maxToolDepth,
       );
     } catch (err: any) {
       console.warn(`[Flora/llm] generateMorningBrief failed: ${err?.message}`);
@@ -312,17 +315,17 @@ export function createReasoningEngine(config: ReasoningConfig): ReasoningEngine 
       `Maximum 2 sentences. No opener like "Hey" or "Just so you know". ` +
       `No follow-up questions. End with a period.`;
 
-    const contents: Content[] = [{ role: 'user', parts: [{ text: userText }] }];
+    const messages: OllamaMessage[] = [{ role: 'user', content: userText }];
 
     try {
       const raw = await runToolLoop(
         client, model, FLORA_SYSTEM_PROMPT,
-        contents, dispatcher, maxToolDepth, timeoutMs,
+        messages, dispatcher, maxToolDepth,
       );
 
       if (!raw) return null;
 
-      // §7 enforcement: trim to MAX_PROACTIVE_SENTENCES regardless of what Gemini returned
+      // §7 enforcement: trim to MAX_PROACTIVE_SENTENCES regardless of what the model returned
       const count = countSentences(raw);
       if (count > MAX_PROACTIVE_SENTENCES) {
         console.warn(
@@ -342,18 +345,17 @@ export function createReasoningEngine(config: ReasoningConfig): ReasoningEngine 
 
   // ── chat ─────────────────────────────────────────────────────────────────
 
-  async function chat(messages: ChatMessage[]): Promise<string | null> {
-    // Map ChatMessage[] → Gemini Content[]
-    // 'assistant' role maps to 'model' in Gemini's convention
-    const contents: Content[] = messages.map(m => ({
-      role: m.role === 'assistant' ? 'model' : 'user',
-      parts: [{ text: m.content }],
+  async function chat(chatMessages: ChatMessage[]): Promise<string | null> {
+    // Map ChatMessage[] → OllamaMessage[]
+    const messages: OllamaMessage[] = chatMessages.map(m => ({
+      role: m.role === 'assistant' ? 'assistant' as const : 'user' as const,
+      content: m.content,
     }));
 
     try {
       return await runToolLoop(
         client, model, FLORA_SYSTEM_PROMPT,
-        contents, dispatcher, maxToolDepth, timeoutMs,
+        messages, dispatcher, maxToolDepth,
       );
     } catch (err: any) {
       console.warn(`[Flora/llm] chat failed: ${err?.message}`);

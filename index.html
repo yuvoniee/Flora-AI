@@ -86,7 +86,29 @@
   <div id="chat-panel" class="chat-panel" role="dialog" aria-label="Chat with Flora">
     <div class="chat-header">
       <span class="chat-title">Flora</span>
-      <button id="chat-close" class="chat-close" aria-label="Close chat">✕</button>
+      <div class="chat-header-actions">
+        <button id="chat-settings-toggle" class="chat-icon-btn" aria-label="Settings" title="Settings">⚙</button>
+        <button id="chat-close" class="chat-icon-btn" aria-label="Close chat">✕</button>
+      </div>
+    </div>
+
+    <!-- Settings view — toggled by gear icon -->
+    <div id="chat-settings" class="chat-settings" hidden>
+      <div class="settings-group">
+        <label class="settings-label" for="settings-location">Weather location</label>
+        <div class="settings-input-row">
+          <input
+            id="settings-location"
+            class="settings-input"
+            type="text"
+            placeholder="e.g. London, Tokyo, New York"
+            autocomplete="off"
+            spellcheck="false"
+          />
+          <button id="settings-location-save" class="settings-save-btn" aria-label="Save location">Save</button>
+        </div>
+        <p class="settings-hint">City name for weather data. Changes take effect on next brief.</p>
+      </div>
     </div>
 
     <!-- §13.4: offline banner — shown when network is lost -->

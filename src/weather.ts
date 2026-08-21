@@ -9,6 +9,10 @@
  * - Respects rate limits via 10-minute in-memory caching
  * - Error handling: API / network failure returns null (never throws uncaught)
  * - Standalone CLI testable
+ *
+ * Geocoding: when given a city name instead of lat/lon, uses Open-Meteo's free
+ * geocoding API (https://geocoding-api.open-meteo.com/v1/search) to resolve
+ * coordinates before fetching weather.
  */
 
 export interface WeatherData {
@@ -18,9 +22,17 @@ export interface WeatherData {
   updatedAt: string;  // ISO timestamp of fetch time
 }
 
+export interface GeocodedLocation {
+  lat: number;
+  lon: number;
+  name: string;       // resolved city name
+  country: string;    // country code
+}
+
 export interface WeatherOptions {
   lat?: number;          // Latitude (default: 40.7128)
   lon?: number;          // Longitude (default: -74.0060)
+  city?: string;         // City name — geocoded to lat/lon if lat/lon not provided
   ttlMs?: number;        // Cache TTL in ms (default: 10 min = 600,000 ms)
   forceRefresh?: boolean;// Bypass cache if true
   timeoutMs?: number;    // Fetch timeout in ms (default: 5000 ms)
@@ -37,6 +49,9 @@ const DEFAULT_TTL_MS = 10 * 60 * 1000; // 10 minutes
 const DEFAULT_TIMEOUT_MS = 5000;       // 5 seconds
 
 let cache: CacheEntry | null = null;
+
+// Geocoding results are cached for the session — city names don't move.
+const geocodeCache = new Map<string, GeocodedLocation>();
 
 /**
  * Maps WMO Weather Interpretation Codes (WMO Code 4677) to clean conditions.
@@ -56,8 +71,71 @@ export function wmoToCondition(code: number): string {
 }
 
 /**
+ * Geocode a city name to lat/lon using Open-Meteo's free geocoding API.
+ *
+ * Returns the top match, or null if no match found.
+ * Results are cached in-memory for the session (city names don't change).
+ * Never throws — returns null on any error (§6 pattern).
+ */
+export async function geocodeCity(
+  city: string,
+  customFetch: typeof fetch = typeof window !== 'undefined' ? window.fetch.bind(window) : fetch,
+): Promise<GeocodedLocation | null> {
+  const key = city.trim().toLowerCase();
+  if (!key) return null;
+
+  // Check in-memory cache
+  const cached = geocodeCache.get(key);
+  if (cached) return cached;
+
+  const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(city.trim())}&count=1&language=en&format=json`;
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS);
+
+    const response = await customFetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+
+    if (!response.ok) {
+      console.warn(`[Flora/weather] Geocoding API returned HTTP ${response.status} for "${city}"`);
+      return null;
+    }
+
+    const json = await response.json();
+    const results = json?.results;
+
+    if (!Array.isArray(results) || results.length === 0) {
+      console.warn(`[Flora/weather] No geocoding results for "${city}"`);
+      return null;
+    }
+
+    const top = results[0];
+    if (typeof top.latitude !== 'number' || typeof top.longitude !== 'number') {
+      console.warn(`[Flora/weather] Malformed geocoding result for "${city}":`, top);
+      return null;
+    }
+
+    const location: GeocodedLocation = {
+      lat: top.latitude,
+      lon: top.longitude,
+      name: top.name ?? city,
+      country: top.country_code ?? '',
+    };
+
+    geocodeCache.set(key, location);
+    console.log(`[Flora/weather] Geocoded "${city}" → ${location.lat},${location.lon} (${location.name}, ${location.country})`);
+    return location;
+  } catch (err: any) {
+    console.warn(`[Flora/weather] Geocoding failed for "${city}": ${err?.message || err}`);
+    return null;
+  }
+}
+
+/**
  * Single normalized function to fetch current weather.
  *
+ * Accepts lat/lon directly, OR a city name (which is geocoded automatically).
  * Returns `WeatherData` on success or `null` on network/API failure.
  * Never throws uncaught exceptions (§6 error handling requirement).
  */
@@ -65,11 +143,26 @@ export async function getWeather(
   options: WeatherOptions = {},
   customFetch: typeof fetch = typeof window !== 'undefined' ? window.fetch.bind(window) : fetch,
 ): Promise<WeatherData | null> {
-  const lat = options.lat ?? DEFAULT_LAT;
-  const lon = options.lon ?? DEFAULT_LON;
+  let lat = options.lat;
+  let lon = options.lon;
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS;
   const forceRefresh = options.forceRefresh ?? false;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+
+  // If no explicit lat/lon but a city name was given, geocode it
+  if (lat === undefined && lon === undefined && options.city) {
+    const geo = await geocodeCity(options.city, customFetch);
+    if (geo) {
+      lat = geo.lat;
+      lon = geo.lon;
+    } else {
+      console.warn(`[Flora/weather] Could not geocode "${options.city}" — falling back to default location`);
+      // Fall through to defaults below
+    }
+  }
+
+  lat = lat ?? DEFAULT_LAT;
+  lon = lon ?? DEFAULT_LON;
 
   const now = Date.now();
 
@@ -123,6 +216,11 @@ export async function getWeather(
 /** Clear in-memory weather cache (useful for testing). */
 export function clearWeatherCache(): void {
   cache = null;
+}
+
+/** Clear the geocoding cache (useful for testing). */
+export function clearGeocodeCache(): void {
+  geocodeCache.clear();
 }
 
 /** Diagnostic helper to inspect cache status. */

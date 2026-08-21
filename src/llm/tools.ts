@@ -1,29 +1,21 @@
 /**
- * Module E — Gemini Tool Schemas
+ * Module E — LLM Tool Schemas (Ollama / OpenAI-compatible format)
  *
- * Defines the four function-calling schemas passed to the Gemini API,
+ * Defines the four function-calling schemas passed to the local Ollama server,
  * plus the dispatcher that resolves tool calls to real Module D integrations.
  *
  * §7 requirement: "define the function-calling schema for each integration
  * up front so the LLM layer is just orchestration, not custom parsing per feature."
  *
  * §11 boundary: the dispatcher validates tool results before returning them
- * to Gemini. Any result containing raw sensitive strings (window titles, file
+ * to the LLM. Any result containing raw sensitive strings (window titles, file
  * contents, OAuth tokens) is replaced with null/[] and a warning is logged.
- * The Gemini API payload never receives raw sensitive data.
+ * The LLM payload never receives raw sensitive data.
  *
- * Switched from Anthropic (claude-opus-4-5) to Google Gemini (gemini-2.0-flash)
- * on 2026-08-12 to use the free tier.
- *
- * ⚠️  FREE-TIER PRIVACY NOTE: Requests made through the Gemini API free tier
- * may be used by Google to improve their models. Before this app handles real
- * personal data long-term (calendar events, file names, music history), swap
- * to a paid Gemini tier where data is not used for training. See:
- * https://ai.google.dev/gemini-api/terms
+ * Switched to local Ollama on 2026-08-20. All data stays on-device — no
+ * cloud API, no privacy trade-off.
  */
 
-import type { FunctionDeclaration } from '@google/genai';
-import { Type } from '@google/genai';
 import type { WeatherData } from '../weather.js';
 import type { CalendarEvent } from '../calendar.js';
 import type { FileActivity } from '../files.js';
@@ -49,8 +41,8 @@ export type ToolDispatcher = (
 //
 // Checks that no tool result contains fields that violate the data-minimization
 // rules. If a violation is detected, the result is replaced with null/[] so
-// the offending data never reaches the Gemini API payload.
-// This logic is unchanged from the Anthropic version — it is API-agnostic.
+// the offending data never reaches the LLM payload.
+// This logic is unchanged from earlier versions — it is API-agnostic.
 
 const FORBIDDEN_RESULT_FIELDS = ['rawTitle', 'contents', 'content', 'token', 'accessToken', 'refreshToken'];
 
@@ -62,7 +54,7 @@ export function validateToolResult(name: string, result: unknown): unknown {
       if (field in obj && typeof obj[field] === 'string' && (obj[field] as string).length > 0) {
         console.warn(
           `[Flora/llm] §11 VIOLATION — tool "${name}" result contains forbidden field "${field}". ` +
-          `Stripping result before sending to Gemini.`
+          `Stripping result before sending to LLM.`
         );
         return true; // violation found
       }
@@ -87,80 +79,102 @@ export function validateToolResult(name: string, result: unknown): unknown {
   return result;
 }
 
-// ── Gemini function declarations (§7) ─────────────────────────────────────────
+// ── OpenAI-compatible tool definitions (§7) ───────────────────────────────────
 //
-// Gemini uses FunctionDeclaration[] inside a Tool object: { functionDeclarations }.
-// The `parameters` field follows JSON Schema (Gemini Schema type).
-// All four declarations match the same tool names used in the Anthropic version
-// so the dispatcher, tests, and character sheet references are unchanged.
+// Ollama uses the OpenAI-compatible tools format:
+//   { type: 'function', function: { name, description, parameters } }
+// The `parameters` field follows standard JSON Schema.
 
-export const FLORA_FUNCTION_DECLARATIONS: FunctionDeclaration[] = [
-  {
-    name: 'get_weather',
-    description:
-      "Get the current weather for the user's saved location. " +
-      'Returns temperature and a plain-English condition string, or null if unavailable.',
+export interface OllamaToolDefinition {
+  type: 'function';
+  function: {
+    name: string;
+    description: string;
     parameters: {
-      type: Type.OBJECT,
-      properties: {
-        location: {
-          type: Type.STRING,
-          description: 'Optional location override (city name or "lat,lon"). Uses saved location if omitted.',
+      type: 'object';
+      properties: Record<string, { type: string; description: string }>;
+      required?: string[];
+    };
+  };
+}
+
+/** The tool list passed to Ollama's /api/chat `tools` field */
+export const FLORA_TOOLS: OllamaToolDefinition[] = [
+  {
+    type: 'function',
+    function: {
+      name: 'get_weather',
+      description:
+        "Get the current weather for the user's saved location. " +
+        'Returns temperature and a plain-English condition string, or null if unavailable.',
+      parameters: {
+        type: 'object',
+        properties: {
+          location: {
+            type: 'string',
+            description: 'Optional location override (city name or "lat,lon"). Uses saved location if omitted.',
+          },
         },
       },
     },
   },
   {
-    name: 'get_calendar_events',
-    description:
-      "Get today's calendar events for the user. " +
-      'Returns an array of events with title, start time, end time, and optional location. ' +
-      'Returns an empty array if there are no events or the calendar is unreachable.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        date: {
-          type: Type.STRING,
-          description: 'ISO 8601 date string (e.g. "2026-08-12"). Defaults to today if omitted.',
+    type: 'function',
+    function: {
+      name: 'get_calendar_events',
+      description:
+        "Get today's calendar events for the user. " +
+        'Returns an array of events with title, start time, end time, and optional location. ' +
+        'Returns an empty array if there are no events or the calendar is unreachable.',
+      parameters: {
+        type: 'object',
+        properties: {
+          date: {
+            type: 'string',
+            description: 'ISO 8601 date string (e.g. "2026-08-12"). Defaults to today if omitted.',
+          },
         },
       },
     },
   },
   {
-    name: 'get_notes_activity',
-    description:
-      "Get recently modified files from the user's watched folder. " +
-      'Returns metadata only (filename, type category, modified time) — never file contents. ' +
-      'Returns an empty array if no recent activity or the folder is inaccessible.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {
-        folder: {
-          type: Type.STRING,
-          description: 'Absolute path to the folder to scan. Uses the configured default if omitted.',
-        },
-        lookback_minutes: {
-          type: Type.NUMBER,
-          description: 'How many minutes back to look for modifications. Default: 15.',
+    type: 'function',
+    function: {
+      name: 'get_notes_activity',
+      description:
+        "Get recently modified files from the user's watched folder. " +
+        'Returns metadata only (filename, type category, modified time) — never file contents. ' +
+        'Returns an empty array if no recent activity or the folder is inaccessible.',
+      parameters: {
+        type: 'object',
+        properties: {
+          folder: {
+            type: 'string',
+            description: 'Absolute path to the folder to scan. Uses the configured default if omitted.',
+          },
+          lookback_minutes: {
+            type: 'number',
+            description: 'How many minutes back to look for modifications. Default: 15.',
+          },
         },
       },
     },
   },
   {
-    name: 'get_now_playing',
-    description:
-      "Get the user's current Spotify playback state. " +
-      'Returns track title, artist, album, and whether it is playing or paused. ' +
-      'Returns null if nothing is playing, Spotify is not connected, or the API is unreachable.',
-    parameters: {
-      type: Type.OBJECT,
-      properties: {},
+    type: 'function',
+    function: {
+      name: 'get_now_playing',
+      description:
+        "Get the user's current Spotify playback state. " +
+        'Returns track title, artist, album, and whether it is playing or paused. ' +
+        'Returns null if nothing is playing, Spotify is not connected, or the API is unreachable.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
     },
   },
 ];
-
-// Convenience: the Tool object passed to Gemini's generateContent config.tools
-export const FLORA_GEMINI_TOOLS = [{ functionDeclarations: FLORA_FUNCTION_DECLARATIONS }];
 
 // ── Tool names as a typed union ───────────────────────────────────────────────
 
@@ -211,9 +225,9 @@ export function createDefaultDispatcher(integrations: {
   };
 }
 
-// ── Serialize tool result for Gemini's functionResponse part ──────────────────
+// ── Serialize tool result for Ollama's tool response message ──────────────────
 //
-// Gemini expects functionResponse.response to be a JSON-serializable object.
+// Ollama expects the tool role message content to be a JSON string.
 // We wrap the result in { result: ... } so nulls and arrays are valid objects.
 
 export function serializeToolResult(name: string, result: unknown): Record<string, unknown> {

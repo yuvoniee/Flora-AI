@@ -5,38 +5,43 @@ import {
   trimToSentences,
   type ChatMessage,
   type SignalContext,
-  type GeminiClientInterface,
-  type GeminiGenerateResult,
+  type OllamaClientInterface,
+  type OllamaChatResult,
+  type OllamaMessage,
 } from './reasoning.js';
 import { validateToolResult, serializeToolResult, serializeToolResultString } from './tools.js';
 
-// ── Gemini mock helpers ───────────────────────────────────────────────────────
+// ── Ollama mock helpers ───────────────────────────────────────────────────────
 //
-// All mocks implement GeminiClientInterface — zero dependency on the real SDK.
+// All mocks implement OllamaClientInterface — zero dependency on any SDK.
 
-/** Build a fake Gemini text-only result */
-function makeTextResult(text: string): GeminiGenerateResult {
+/** Build a fake Ollama text-only result */
+function makeTextResult(text: string): OllamaChatResult {
   return {
-    text: () => text,
-    functionCalls: () => undefined,
+    message: { role: 'assistant', content: text },
   };
 }
 
-/** Build a fake Gemini function-call result */
+/** Build a fake Ollama tool-call result */
 function makeFunctionCallResult(
   calls: Array<{ name: string; args?: Record<string, unknown> }>
-): GeminiGenerateResult {
+): OllamaChatResult {
   return {
-    text: () => null,
-    functionCalls: () => calls.map(c => ({ name: c.name, args: c.args ?? {} })),
+    message: {
+      role: 'assistant',
+      content: '',
+      tool_calls: calls.map(c => ({
+        function: { name: c.name, arguments: c.args ?? {} },
+      })),
+    },
   };
 }
 
-/** Create a mock GeminiClientInterface */
-function mockGeminiClient(results: GeminiGenerateResult[]): GeminiClientInterface {
+/** Create a mock OllamaClientInterface */
+function mockOllamaClient(results: OllamaChatResult[]): OllamaClientInterface {
   let callCount = 0;
   return {
-    generateContent: vi.fn().mockImplementation(async () => {
+    chat: vi.fn().mockImplementation(async () => {
       const res = results[callCount] ?? results[results.length - 1];
       callCount++;
       return res;
@@ -168,10 +173,9 @@ describe('serializeToolResult', () => {
 // ── generateMorningBrief ──────────────────────────────────────────────────────
 
 describe('Module E — generateMorningBrief', () => {
-  it('returns a string when Gemini responds with text', async () => {
+  it('returns a string when the model responds with text', async () => {
     const engine = createReasoningEngine({
-      apiKey: 'test',
-      _customClient: mockGeminiClient([makeTextResult("It's 22°C and partly cloudy. Nothing on your calendar today.")]),
+      _customClient: mockOllamaClient([makeTextResult("It's 22°C and partly cloudy. Nothing on your calendar today.")]),
       toolDispatcher: makeDispatcher(),
     });
 
@@ -183,8 +187,7 @@ describe('Module E — generateMorningBrief', () => {
   it('resolves a tool call and uses the result', async () => {
     const dispatcher = makeDispatcher({ get_weather: { temp: 18, condition: 'Cloudy' } });
     const engine = createReasoningEngine({
-      apiKey: 'test',
-      _customClient: mockGeminiClient([
+      _customClient: mockOllamaClient([
         makeFunctionCallResult([{ name: 'get_weather' }]),
         makeTextResult("It's 18°C and cloudy. No meetings today."),
       ]),
@@ -197,18 +200,18 @@ describe('Module E — generateMorningBrief', () => {
   });
 
   it('returns null on API failure (§7 — graceful degradation)', async () => {
-    const failClient: GeminiClientInterface = {
-      generateContent: vi.fn().mockRejectedValue(new Error('Network timeout')),
+    const failClient: OllamaClientInterface = {
+      chat: vi.fn().mockRejectedValue(new Error('Network timeout')),
     };
 
-    const engine = createReasoningEngine({ apiKey: 'test', _customClient: failClient, toolDispatcher: makeDispatcher() });
+    const engine = createReasoningEngine({ _customClient: failClient, toolDispatcher: makeDispatcher() });
     const brief = await engine.generateMorningBrief();
     expect(brief).toBeNull();
   });
 
   it('returns null on API timeout (aborted request)', async () => {
-    const timeoutClient: GeminiClientInterface = {
-      generateContent: vi.fn().mockImplementation(() => {
+    const timeoutClient: OllamaClientInterface = {
+      chat: vi.fn().mockImplementation(() => {
         const err = new Error('Request aborted');
         err.name = 'AbortError';
         return Promise.reject(err);
@@ -216,7 +219,6 @@ describe('Module E — generateMorningBrief', () => {
     };
 
     const engine = createReasoningEngine({
-      apiKey: 'test',
       _customClient: timeoutClient,
       toolDispatcher: makeDispatcher(),
       timeoutMs: 1,
@@ -234,8 +236,7 @@ describe('Module E — generateMorningBrief', () => {
     });
 
     const engine = createReasoningEngine({
-      apiKey: 'test',
-      _customClient: mockGeminiClient([makeTextResult("Couldn't reach weather or calendar today. No recent file activity.")]),
+      _customClient: mockOllamaClient([makeTextResult("Couldn't reach weather or calendar today. No recent file activity.")]),
       toolDispatcher: emptyDispatcher,
     });
 
@@ -246,23 +247,23 @@ describe('Module E — generateMorningBrief', () => {
 
   it('passes SignalContext to the brief prompt', async () => {
     const signals: SignalContext = { timeOfDay: 'morning', windowCategory: 'code_editor' };
-    let capturedContents: any[] = [];
+    let capturedMessages: any[] = [];
 
-    const capturingClient: GeminiClientInterface = {
-      generateContent: vi.fn().mockImplementation(async (params: any) => {
-        capturedContents = params.contents;
+    const capturingClient: OllamaClientInterface = {
+      chat: vi.fn().mockImplementation(async (params: any) => {
+        capturedMessages = params.messages;
         return makeTextResult('Morning brief text.');
       }),
     };
 
     const engine = createReasoningEngine({
-      apiKey: 'test',
       _customClient: capturingClient,
       toolDispatcher: makeDispatcher(),
     });
 
     await engine.generateMorningBrief(signals);
-    const userText = capturedContents[0]?.parts[0]?.text ?? '';
+    // messages[0] is system, messages[1] is user
+    const userText = capturedMessages[1]?.content ?? '';
     expect(userText).toContain('morning');
     expect(userText).toContain('code_editor');
   });
@@ -273,8 +274,7 @@ describe('Module E — generateMorningBrief', () => {
 describe('Module E — generateProactiveMessage', () => {
   it('returns a 1-2 sentence message for a valid trigger', async () => {
     const engine = createReasoningEngine({
-      apiKey: 'test',
-      _customClient: mockGeminiClient([makeTextResult('Your 3pm call starts in 15 minutes.')]),
+      _customClient: mockOllamaClient([makeTextResult('Your 3pm call starts in 15 minutes.')]),
       toolDispatcher: makeDispatcher(),
     });
 
@@ -286,8 +286,7 @@ describe('Module E — generateProactiveMessage', () => {
   it('trims responses exceeding 2 sentences (§7 enforcement)', async () => {
     const longText = 'Sentence one. Sentence two. Sentence three is too long. Sentence four also.';
     const engine = createReasoningEngine({
-      apiKey: 'test',
-      _customClient: mockGeminiClient([makeTextResult(longText)]),
+      _customClient: mockOllamaClient([makeTextResult(longText)]),
       toolDispatcher: makeDispatcher(),
     });
 
@@ -298,11 +297,11 @@ describe('Module E — generateProactiveMessage', () => {
   });
 
   it('returns null silently on API failure (§7 — never surfaces to user)', async () => {
-    const failClient: GeminiClientInterface = {
-      generateContent: vi.fn().mockRejectedValue(new Error('Service unavailable')),
+    const failClient: OllamaClientInterface = {
+      chat: vi.fn().mockRejectedValue(new Error('Service unavailable')),
     };
 
-    const engine = createReasoningEngine({ apiKey: 'test', _customClient: failClient, toolDispatcher: makeDispatcher() });
+    const engine = createReasoningEngine({ _customClient: failClient, toolDispatcher: makeDispatcher() });
     // Must not throw
     const msg = await engine.generateProactiveMessage('new_event');
     expect(msg).toBeNull();
@@ -311,8 +310,7 @@ describe('Module E — generateProactiveMessage', () => {
   it('handles all six trigger types without throwing', async () => {
     const triggers = ['focus_break', 'long_idle', 'new_event', 'now_playing', 'morning_startup', 'focus_ended'] as const;
     const engine = createReasoningEngine({
-      apiKey: 'test',
-      _customClient: mockGeminiClient([makeTextResult('One sentence.')]),
+      _customClient: mockOllamaClient([makeTextResult('One sentence.')]),
       toolDispatcher: makeDispatcher(),
     });
 
@@ -328,8 +326,7 @@ describe('Module E — generateProactiveMessage', () => {
 describe('Module E — chat', () => {
   it('returns a response for a simple message', async () => {
     const engine = createReasoningEngine({
-      apiKey: 'test',
-      _customClient: mockGeminiClient([makeTextResult('You have a meeting at 3pm.')]),
+      _customClient: mockOllamaClient([makeTextResult('You have a meeting at 3pm.')]),
       toolDispatcher: makeDispatcher(),
     });
 
@@ -338,18 +335,17 @@ describe('Module E — chat', () => {
     expect(reply).toBe('You have a meeting at 3pm.');
   });
 
-  it('maps "assistant" role to "model" role for Gemini', async () => {
-    let capturedContents: any[] = [];
+  it('preserves "assistant" role as-is for Ollama (no role mapping needed)', async () => {
+    let capturedMessages: any[] = [];
 
-    const capturingClient: GeminiClientInterface = {
-      generateContent: vi.fn().mockImplementation(async (params: any) => {
-        capturedContents = params.contents;
+    const capturingClient: OllamaClientInterface = {
+      chat: vi.fn().mockImplementation(async (params: any) => {
+        capturedMessages = params.messages;
         return makeTextResult('Reply.');
       }),
     };
 
     const engine = createReasoningEngine({
-      apiKey: 'test',
       _customClient: capturingClient,
       toolDispatcher: makeDispatcher(),
     });
@@ -360,9 +356,10 @@ describe('Module E — chat', () => {
       { role: 'user', content: 'Any meetings?' },
     ]);
 
-    expect(capturedContents[1].role).toBe('model');   // 'assistant' mapped → 'model'
-    expect(capturedContents[0].role).toBe('user');
-    expect(capturedContents[2].role).toBe('user');
+    // messages[0] is system, [1..3] are user/assistant/user
+    expect(capturedMessages[1].role).toBe('user');
+    expect(capturedMessages[2].role).toBe('assistant');
+    expect(capturedMessages[3].role).toBe('user');
   });
 
   it('completes a tool-use round-trip', async () => {
@@ -370,8 +367,7 @@ describe('Module E — chat', () => {
       get_calendar_events: [{ title: 'Sprint Planning', start: '2026-08-12T14:00:00Z', end: '2026-08-12T15:00:00Z', allDay: false }],
     });
     const engine = createReasoningEngine({
-      apiKey: 'test',
-      _customClient: mockGeminiClient([
+      _customClient: mockOllamaClient([
         makeFunctionCallResult([{ name: 'get_calendar_events' }]),
         makeTextResult('You have Sprint Planning at 2pm.'),
       ]),
@@ -385,14 +381,13 @@ describe('Module E — chat', () => {
 
   it('respects max tool depth (§7 — prevents infinite loops)', async () => {
     // Always returns a function call, never text → should hit the depth limit
-    const infiniteClient: GeminiClientInterface = {
-      generateContent: vi.fn().mockResolvedValue(
+    const infiniteClient: OllamaClientInterface = {
+      chat: vi.fn().mockResolvedValue(
         makeFunctionCallResult([{ name: 'get_weather' }])
       ),
     };
 
     const engine = createReasoningEngine({
-      apiKey: 'test',
       _customClient: infiniteClient,
       toolDispatcher: makeDispatcher({ get_weather: { temp: 20, condition: 'Clear' } }),
       maxToolDepth: 3,
@@ -400,16 +395,16 @@ describe('Module E — chat', () => {
 
     const reply = await engine.chat([{ role: 'user', content: 'What is the weather?' }]);
     expect(reply).toBeNull();
-    // Should have called Gemini exactly maxToolDepth (3) times
-    expect((infiniteClient.generateContent as any).mock.calls.length).toBe(3);
+    // Should have called Ollama exactly maxToolDepth (3) times
+    expect((infiniteClient.chat as any).mock.calls.length).toBe(3);
   });
 
   it('returns null on API failure (caller shows retry UI)', async () => {
-    const failClient: GeminiClientInterface = {
-      generateContent: vi.fn().mockRejectedValue(new Error('Connection refused')),
+    const failClient: OllamaClientInterface = {
+      chat: vi.fn().mockRejectedValue(new Error('Connection refused')),
     };
 
-    const engine = createReasoningEngine({ apiKey: 'test', _customClient: failClient, toolDispatcher: makeDispatcher() });
+    const engine = createReasoningEngine({ _customClient: failClient, toolDispatcher: makeDispatcher() });
     const reply = await engine.chat([{ role: 'user', content: 'Hello' }]);
     expect(reply).toBeNull();
   });
@@ -421,35 +416,34 @@ describe('Module E — chat', () => {
       { role: 'user', content: 'Any meetings?' },
     ];
 
-    let capturedContents: any[] = [];
-    const capturingClient: GeminiClientInterface = {
-      generateContent: vi.fn().mockImplementation(async (params: any) => {
-        capturedContents = params.contents;
+    let capturedMessages: any[] = [];
+    const capturingClient: OllamaClientInterface = {
+      chat: vi.fn().mockImplementation(async (params: any) => {
+        capturedMessages = params.messages;
         return makeTextResult('You have a 2pm standup.');
       }),
     };
 
     const engine = createReasoningEngine({
-      apiKey: 'test',
       _customClient: capturingClient,
       toolDispatcher: makeDispatcher(),
     });
 
     await engine.chat(messages);
-    expect(capturedContents).toHaveLength(3);
-    expect(capturedContents[2].parts[0].text).toBe('Any meetings?');
+    // messages[0] = system, [1..3] = user/assistant/user
+    expect(capturedMessages).toHaveLength(4);
+    expect(capturedMessages[3].content).toBe('Any meetings?');
   });
 
   it('handles unrecognized tool names gracefully (returns null for that tool)', async () => {
-    const weirdClient: GeminiClientInterface = {
-      generateContent: vi.fn()
+    const weirdClient: OllamaClientInterface = {
+      chat: vi.fn()
         .mockResolvedValueOnce(makeFunctionCallResult([{ name: 'hack_the_planet' }]))
         .mockResolvedValueOnce(makeTextResult('Here is your result.')),
     };
 
     const dispatcher = makeDispatcher();
     const engine = createReasoningEngine({
-      apiKey: 'test',
       _customClient: weirdClient,
       toolDispatcher: dispatcher,
     });
@@ -480,24 +474,25 @@ describe('§11 — system prompt data minimization', () => {
     expect(FLORA_SYSTEM_PROMPT).toContain('Maximum 2 sentences');
   });
 
-  it('system prompt is passed as systemInstruction in every Gemini API call', async () => {
-    let capturedSystemInstruction = '';
-    const capturingClient: GeminiClientInterface = {
-      generateContent: vi.fn().mockImplementation(async (params: any) => {
-        capturedSystemInstruction = params.config.systemInstruction;
+  it('system prompt is passed as a system message in every Ollama API call', async () => {
+    let capturedMessages: OllamaMessage[] = [];
+    const capturingClient: OllamaClientInterface = {
+      chat: vi.fn().mockImplementation(async (params: any) => {
+        capturedMessages = params.messages;
         return makeTextResult('Test response.');
       }),
     };
 
     const engine = createReasoningEngine({
-      apiKey: 'test',
       _customClient: capturingClient,
       toolDispatcher: makeDispatcher(),
     });
 
     await engine.generateMorningBrief();
-    expect(capturedSystemInstruction).toContain('FLORA — CHARACTER SHEET');
-    expect(capturedSystemInstruction.length).toBeGreaterThan(500);
+    // First message should be the system prompt
+    expect(capturedMessages[0].role).toBe('system');
+    expect(capturedMessages[0].content).toContain('FLORA — CHARACTER SHEET');
+    expect(capturedMessages[0].content.length).toBeGreaterThan(500);
   });
 
   it('SignalContext only allows WindowCategory labels — type is a string union (compile check)', () => {
@@ -508,12 +503,13 @@ describe('§11 — system prompt data minimization', () => {
     expect(signals.windowCategory).toBe('code_editor');
   });
 
-  it('function declarations reference the Gemini tool list (not Anthropic)', async () => {
-    const { FLORA_GEMINI_TOOLS } = await import('./tools.js');
-    expect(FLORA_GEMINI_TOOLS).toHaveLength(1);
-    expect(FLORA_GEMINI_TOOLS[0]).toHaveProperty('functionDeclarations');
-    const decls = FLORA_GEMINI_TOOLS[0].functionDeclarations;
-    const names = decls.map((d: any) => d.name);
+  it('tool definitions use OpenAI-compatible format for Ollama', async () => {
+    const { FLORA_TOOLS } = await import('./tools.js');
+    expect(FLORA_TOOLS.length).toBe(4);
+    expect(FLORA_TOOLS[0].type).toBe('function');
+    expect(FLORA_TOOLS[0].function).toHaveProperty('name');
+    expect(FLORA_TOOLS[0].function).toHaveProperty('parameters');
+    const names = FLORA_TOOLS.map((t: any) => t.function.name);
     expect(names).toContain('get_weather');
     expect(names).toContain('get_calendar_events');
     expect(names).toContain('get_notes_activity');
