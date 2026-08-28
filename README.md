@@ -40,40 +40,13 @@ Instead of waiting for you to ask:
 
 ## ✦ The Idea
 
-Most assistants work like this:
+<p align="center">
+  <img src="flora-idea.png" alt="How Flora works" width="900"/>
+</p>
 
-\`\`\`
-You → Ask → Assistant → Answer
-\`\`\`
+Flora isn't designed to be another window full of information.
 
-Flora works differently:
-
-\`\`\`
-                    ┌── Calendar
-                    ├── Weather
-                    ├── Activity
-                    ├── Tasks
-                    └── Music
-                         │
-                         ▼
-                    ┌───────────┐
-                    │   Flora   │
-                    │           │
-                    │  notices  │
-                    │  reasons  │
-                    │  reacts   │
-                    └─────┬─────┘
-                          │
-             ┌────────────┼────────────┐
-             ▼            ▼            ▼
-          Visual        Chat        Brief
-          Reaction
-\`\`\`
-
-The goal isn't to create another window full of information.
-
-The goal is to create a presence.
-
+**The goal is to create a presence.**
 ---
 
 ## 🌱 Features
