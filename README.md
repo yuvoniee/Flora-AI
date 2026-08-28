@@ -220,28 +220,28 @@ flora/
 
 ### 1. Install a model
 
-\`\`\`bash
+```bash
 ollama pull llama3.2
-\`\`\`
+```
 
 ### 2. Clone the repository
 
-\`\`\`bash
+```bash
 git clone <repository-url>
 cd flora
-\`\`\`
+```
 
 ### 3. Install dependencies
 
-\`\`\`bash
+```bash
 npm install
-\`\`\`
+```
 
 ### 4. Start Flora
 
-\`\`\`bash
+```bash
 npm run dev
-\`\`\`
+```
 
 On first launch, Flora will guide you through onboarding. Every integration can be skipped — you can start with nothing connected and add context later.
 
