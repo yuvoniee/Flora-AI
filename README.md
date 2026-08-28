@@ -186,32 +186,26 @@ Flora is built as a local-first desktop application using:
   <img src="flora-architecture.png" alt="Flora architecture" width="900"/>
 </p>
 
-### Project Structure
+## Project Structure
 
-\`\`\`
+```text
 flora/
-│
 ├── src/
-│   ├── components/       # UI, avatar & terrarium
-│   ├── core/             # State machine & application logic
-│   ├── routes/           # Application views
-│   ├── store/            # Local application state
-│   ├── types/            # Shared TypeScript contracts
-│   └── utils/            # Shared utilities
-│
-├── src/llm/
-│   ├── character/        # Flora's personality
-│   ├── tools/             # Tool definitions
-│   └── ollama/            # Local model integration
+│   ├── components/
+│   ├── core/
+│   ├── routes/
+│   ├── store/
+│   ├── types/
+│   └── utils/
 │
 ├── src-tauri/
-│   ├── shell/             # Desktop window & system integration
-│   ├── memory/            # Local encrypted storage
-│   └── security/          # Credential handling
+│   ├── shell/
+│   ├── memory/
+│   └── security/
 │
-├── flora-ai-srs.md        # Product & technical specification
-└── flora-preview.html     # Original avatar prototype
-\`\`\`
+├── flora-ai-srs.md
+└── README.md
+```
 
 ---
 
