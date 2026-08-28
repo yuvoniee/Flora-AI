@@ -3,7 +3,7 @@
 > **A living desktop companion that notices your day, so you don't have to explain it.**
 
 <p align="center">
-  <img src="flora-banner.png" alt="Flora — A living desktop companion" width="900"/>
+  <img src="FloraBanner.png" alt="FloraAI — A living desktop companion" width="100%"/>
 </p>
 
 <p align="center">
