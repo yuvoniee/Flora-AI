@@ -178,40 +178,13 @@ Everything is optional and skippable. No integrations connected? That's okay —
 
 ---
 
-## 🏗️ Architecture
+# 🏗️ Architecture
 
 Flora is built as a local-first desktop application using:
 
-\`\`\`
-┌──────────────────────────────────────────┐
-│              Flora Desktop                │
-├──────────────────────────────────────────┤
-│                                            │
-│  React + TypeScript                       │
-│  ├── Avatar                               │
-│  ├── Terrarium                            │
-│  ├── Chat                                 │
-│  ├── Onboarding                           │
-│  └── Signal UI                            │
-│                                            │
-├──────────────────────────────────────────┤
-│                                            │
-│  Reasoning Layer                          │
-│  ├── Character                            │
-│  ├── Context                              │
-│  ├── Tool schemas                         │
-│  └── Ollama                               │
-│                                            │
-├──────────────────────────────────────────┤
-│                                            │
-│  Tauri / Rust Backend                     │
-│  ├── Desktop shell                        │
-│  ├── Local storage                        │
-│  ├── Secure credentials                   │
-│  └── System integrations                  │
-│                                            │
-└──────────────────────────────────────────┘
-\`\`\`
+<p align="center">
+  <img src="flora-architecture.png" alt="Flora architecture" width="900"/>
+</p>
 
 ### Project Structure
 
